@@ -32,6 +32,12 @@ pub type VAConfigID = u32;
 pub type VAContextID = u32;
 pub type VASurfaceID = u32;
 pub type VABufferID = u32;
+pub type VAImageID = u32;
+
+/// Sentinel value used by the spec for "no surface" / unset slots
+/// (e.g. unused `ReferenceFrames[]` entries in `VAPictureH264`).
+pub const VA_INVALID_ID: u32 = 0xFFFF_FFFF;
+pub const VA_INVALID_SURFACE: VASurfaceID = VA_INVALID_ID;
 
 /// VAStatus — return code for almost every libva entry point.
 ///
@@ -82,6 +88,228 @@ pub mod entrypoint {
     pub const VAEntrypointEncSlice: i32 = 6; // encode (slice level)
     pub const VAEntrypointEncSliceLP: i32 = 8; // encode low-power
     pub const VAEntrypointVideoProc: i32 = 10; // pre/post-processing
+}
+
+// ─────────────────────────── Config attribute types ─────────────────────────
+//
+// Verbatim subset from `VAConfigAttribType` in `/usr/include/va/va.h`. Many
+// more values exist; we expose only those that are useful for steering
+// `Config::new` defaults and surfacing decoder capability checks.
+
+#[allow(non_upper_case_globals)]
+pub mod attrib {
+    pub const VAConfigAttribRTFormat: i32 = 0;
+    pub const VAConfigAttribSpatialResidual: i32 = 1;
+    pub const VAConfigAttribSpatialClipping: i32 = 2;
+    pub const VAConfigAttribIntraResidual: i32 = 3;
+    pub const VAConfigAttribEncryption: i32 = 4;
+    pub const VAConfigAttribRateControl: i32 = 5;
+    pub const VAConfigAttribDecSliceMode: i32 = 6;
+    pub const VAConfigAttribDecJPEG: i32 = 7;
+    pub const VAConfigAttribDecProcessing: i32 = 8;
+    pub const VAConfigAttribMaxPictureWidth: i32 = 9;
+    pub const VAConfigAttribMaxPictureHeight: i32 = 10;
+}
+
+/// `VAConfigAttrib { type, value }` — the in/out struct used by
+/// `vaGetConfigAttributes` and the optional `attrib_list` to
+/// `vaCreateConfig`. Layout matches `_VAConfigAttrib` in `va.h`:
+/// two contiguous `uint32_t` fields.
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAConfigAttrib {
+    pub ty: i32,
+    pub value: u32,
+}
+
+/// Sentinel returned by the driver when an attribute is not supported
+/// for the queried profile/entrypoint pair.
+pub const VA_ATTRIB_NOT_SUPPORTED: u32 = 0x8000_0000;
+
+// ─────────────────────────── RT format / FourCC values ─────────────────────
+
+pub const VA_RT_FORMAT_YUV420: u32 = 0x0000_0001;
+pub const VA_RT_FORMAT_YUV422: u32 = 0x0000_0002;
+pub const VA_RT_FORMAT_YUV444: u32 = 0x0000_0004;
+pub const VA_RT_FORMAT_YUV400: u32 = 0x0000_0010;
+pub const VA_RT_FORMAT_YUV420_10: u32 = 0x0000_0100;
+
+pub const VA_FOURCC_NV12: u32 = 0x3231_564E;
+pub const VA_FOURCC_I420: u32 = 0x3032_3449;
+pub const VA_FOURCC_YV12: u32 = 0x3231_5659;
+pub const VA_FOURCC_IYUV: u32 = 0x5655_5949;
+
+// ─────────────────────────── Buffer types ─────────────────────────────────
+
+#[allow(non_upper_case_globals)]
+pub mod buffer_type {
+    pub const VAPictureParameterBufferType: u32 = 0;
+    pub const VAIQMatrixBufferType: u32 = 1;
+    pub const VASliceParameterBufferType: u32 = 4;
+    pub const VASliceDataBufferType: u32 = 5;
+    pub const VAImageBufferType: u32 = 9;
+}
+
+// Slice data flags — see `va.h` lines 3057+
+pub const VA_SLICE_DATA_FLAG_ALL: u32 = 0x00;
+pub const VA_SLICE_DATA_FLAG_BEGIN: u32 = 0x01;
+pub const VA_SLICE_DATA_FLAG_MIDDLE: u32 = 0x02;
+pub const VA_SLICE_DATA_FLAG_END: u32 = 0x04;
+
+// ─────────────────────────── H.264 picture / slice flags ───────────────────
+
+pub const VA_PICTURE_H264_INVALID: u32 = 0x0000_0001;
+pub const VA_PICTURE_H264_TOP_FIELD: u32 = 0x0000_0002;
+pub const VA_PICTURE_H264_BOTTOM_FIELD: u32 = 0x0000_0004;
+pub const VA_PICTURE_H264_SHORT_TERM_REFERENCE: u32 = 0x0000_0008;
+pub const VA_PICTURE_H264_LONG_TERM_REFERENCE: u32 = 0x0000_0010;
+
+// ─────────────────────────── VA padding constants ─────────────────────────
+// Mirror of `VA_PADDING_LOW`/`MEDIUM`/`HIGH` in `va.h` — the trailing
+// `va_reserved[N]` arrays in every libva struct must match the header's
+// length so the layout stays ABI-compatible.
+pub const VA_PADDING_LOW: usize = 4;
+pub const VA_PADDING_MEDIUM: usize = 8;
+pub const VA_PADDING_HIGH: usize = 16;
+
+// ─────────────────────────── H.264 decode buffers ──────────────────────────
+//
+// Verbatim layout from `/usr/include/va/va.h` (`_VAPictureH264`,
+// `_VAPictureParameterBufferH264`, `_VASliceParameterBufferH264`).
+// Bitfield unions are flattened into the one `u32` value we know is
+// the storage representation on every supported ABI.
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAPictureH264 {
+    pub picture_id: VASurfaceID,
+    pub frame_idx: u32,
+    pub flags: u32,
+    pub top_field_order_cnt: i32,
+    pub bottom_field_order_cnt: i32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+impl VAPictureH264 {
+    /// Return a `VAPictureH264` whose every field is "invalid" —
+    /// suitable for filling unused `ReferenceFrames[16]` slots and
+    /// the `RefPicList0/1[32]` slots in the slice parameter buffer.
+    pub fn invalid() -> Self {
+        Self {
+            picture_id: VA_INVALID_SURFACE,
+            frame_idx: 0,
+            flags: VA_PICTURE_H264_INVALID,
+            top_field_order_cnt: 0,
+            bottom_field_order_cnt: 0,
+            va_reserved: [0; VA_PADDING_LOW],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAPictureParameterBufferH264 {
+    pub curr_pic: VAPictureH264,
+    pub reference_frames: [VAPictureH264; 16],
+    pub picture_width_in_mbs_minus1: u16,
+    pub picture_height_in_mbs_minus1: u16,
+    pub bit_depth_luma_minus8: u8,
+    pub bit_depth_chroma_minus8: u8,
+    pub num_ref_frames: u8,
+    /// Packed bitfield from `seq_fields.bits` — see `va.h` for layout.
+    pub seq_fields: u32,
+    /// Deprecated FMO fields — must be zero.
+    pub num_slice_groups_minus1: u8,
+    pub slice_group_map_type: u8,
+    pub slice_group_change_rate_minus1: u16,
+    pub pic_init_qp_minus26: i8,
+    pub pic_init_qs_minus26: i8,
+    pub chroma_qp_index_offset: i8,
+    pub second_chroma_qp_index_offset: i8,
+    /// Packed bitfield from `pic_fields.bits`.
+    pub pic_fields: u32,
+    pub frame_num: u16,
+    pub va_reserved: [u32; VA_PADDING_MEDIUM],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VASliceParameterBufferH264 {
+    pub slice_data_size: u32,
+    pub slice_data_offset: u32,
+    pub slice_data_flag: u32,
+    pub slice_data_bit_offset: u16,
+    pub first_mb_in_slice: u16,
+    pub slice_type: u8,
+    pub direct_spatial_mv_pred_flag: u8,
+    pub num_ref_idx_l0_active_minus1: u8,
+    pub num_ref_idx_l1_active_minus1: u8,
+    pub cabac_init_idc: u8,
+    pub slice_qp_delta: i8,
+    pub disable_deblocking_filter_idc: u8,
+    pub slice_alpha_c0_offset_div2: i8,
+    pub slice_beta_offset_div2: i8,
+    pub ref_pic_list0: [VAPictureH264; 32],
+    pub ref_pic_list1: [VAPictureH264; 32],
+    pub luma_log2_weight_denom: u8,
+    pub chroma_log2_weight_denom: u8,
+    pub luma_weight_l0_flag: u8,
+    pub luma_weight_l0: [i16; 32],
+    pub luma_offset_l0: [i16; 32],
+    pub chroma_weight_l0_flag: u8,
+    pub chroma_weight_l0: [[i16; 2]; 32],
+    pub chroma_offset_l0: [[i16; 2]; 32],
+    pub luma_weight_l1_flag: u8,
+    pub luma_weight_l1: [i16; 32],
+    pub luma_offset_l1: [i16; 32],
+    pub chroma_weight_l1_flag: u8,
+    pub chroma_weight_l1: [[i16; 2]; 32],
+    pub chroma_offset_l1: [[i16; 2]; 32],
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+// ─────────────────────────── VAImage / VAImageFormat ──────────────────────
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAImageFormat {
+    pub fourcc: u32,
+    pub byte_order: u32,
+    pub bits_per_pixel: u32,
+    pub depth: u32,
+    pub red_mask: u32,
+    pub green_mask: u32,
+    pub blue_mask: u32,
+    pub alpha_mask: u32,
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAImage {
+    pub image_id: VAImageID,
+    pub format: VAImageFormat,
+    pub buf: VABufferID,
+    pub width: u16,
+    pub height: u16,
+    pub data_size: u32,
+    pub num_planes: u32,
+    pub pitches: [u32; 3],
+    pub offsets: [u32; 3],
+    pub num_palette_entries: i32,
+    pub entry_bytes: i32,
+    pub component_order: [i8; 4],
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+impl VAImage {
+    /// Zero-initialised `VAImage` suitable for passing as the `out`
+    /// argument to `vaDeriveImage`.
+    pub fn zeroed() -> Self {
+        // SAFETY: every field is plain old data (POD); a zero
+        // bit-pattern is a valid value for all of them.
+        unsafe { std::mem::zeroed() }
+    }
 }
 
 // ─────────────────────────── function pointer types ──────────────────────────
@@ -170,6 +398,91 @@ pub type FnVaCreateBuffer = unsafe extern "C" fn(
     buf_id: *mut VABufferID,
 ) -> VAStatus;
 
+pub type FnVaQueryConfigEntrypoints = unsafe extern "C" fn(
+    dpy: VADisplay,
+    profile: i32,
+    entrypoint_list: *mut i32,
+    num_entrypoints: *mut i32,
+) -> VAStatus;
+
+pub type FnVaGetConfigAttributes = unsafe extern "C" fn(
+    dpy: VADisplay,
+    profile: i32,
+    entrypoint: i32,
+    attrib_list: *mut VAConfigAttrib,
+    num_attribs: i32,
+) -> VAStatus;
+
+pub type FnVaDestroyConfig =
+    unsafe extern "C" fn(dpy: VADisplay, config_id: VAConfigID) -> VAStatus;
+
+pub type FnVaDestroyContext =
+    unsafe extern "C" fn(dpy: VADisplay, context: VAContextID) -> VAStatus;
+
+pub type FnVaSyncSurface =
+    unsafe extern "C" fn(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
+
+pub type FnVaDestroyBuffer =
+    unsafe extern "C" fn(dpy: VADisplay, buffer_id: VABufferID) -> VAStatus;
+
+pub type FnVaMapBuffer = unsafe extern "C" fn(
+    dpy: VADisplay,
+    buf_id: VABufferID,
+    pbuf: *mut *mut c_void,
+) -> VAStatus;
+
+pub type FnVaUnmapBuffer =
+    unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
+
+pub type FnVaDeriveImage = unsafe extern "C" fn(
+    dpy: VADisplay,
+    surface: VASurfaceID,
+    image: *mut VAImage,
+) -> VAStatus;
+
+pub type FnVaDestroyImage =
+    unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
+
+pub type FnVaGetImage = unsafe extern "C" fn(
+    dpy: VADisplay,
+    surface: VASurfaceID,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    image: VAImageID,
+) -> VAStatus;
+
+pub type FnVaCreateImage = unsafe extern "C" fn(
+    dpy: VADisplay,
+    format: *mut VAImageFormat,
+    width: i32,
+    height: i32,
+    image: *mut VAImage,
+) -> VAStatus;
+
+pub type FnVaQueryImageFormats = unsafe extern "C" fn(
+    dpy: VADisplay,
+    format_list: *mut VAImageFormat,
+    num_formats: *mut i32,
+) -> VAStatus;
+
+pub type FnVaMaxNumImageFormats = unsafe extern "C" fn(dpy: VADisplay) -> i32;
+
+pub type FnVaPutImage = unsafe extern "C" fn(
+    dpy: VADisplay,
+    surface: VASurfaceID,
+    image: VAImageID,
+    src_x: i32,
+    src_y: i32,
+    src_width: u32,
+    src_height: u32,
+    dest_x: i32,
+    dest_y: i32,
+    dest_width: u32,
+    dest_height: u32,
+) -> VAStatus;
+
 // DRM backend (libva-drm.so.2)
 pub type FnVaGetDisplayDRM = unsafe extern "C" fn(fd: i32) -> VADisplay;
 
@@ -196,6 +509,21 @@ pub struct Vtable {
     pub va_render_picture: FnVaRenderPicture,
     pub va_end_picture: FnVaEndPicture,
     pub va_create_buffer: FnVaCreateBuffer,
+    pub va_query_config_entrypoints: FnVaQueryConfigEntrypoints,
+    pub va_get_config_attributes: FnVaGetConfigAttributes,
+    pub va_destroy_config: FnVaDestroyConfig,
+    pub va_destroy_context: FnVaDestroyContext,
+    pub va_sync_surface: FnVaSyncSurface,
+    pub va_destroy_buffer: FnVaDestroyBuffer,
+    pub va_map_buffer: FnVaMapBuffer,
+    pub va_unmap_buffer: FnVaUnmapBuffer,
+    pub va_derive_image: FnVaDeriveImage,
+    pub va_destroy_image: FnVaDestroyImage,
+    pub va_get_image: FnVaGetImage,
+    pub va_put_image: FnVaPutImage,
+    pub va_create_image: FnVaCreateImage,
+    pub va_query_image_formats: FnVaQueryImageFormats,
+    pub va_max_num_image_formats: FnVaMaxNumImageFormats,
     // libva-drm
     pub va_get_display_drm: FnVaGetDisplayDRM,
     // Keep libraries alive
@@ -278,6 +606,37 @@ fn load_vtable() -> Result<Vtable, String> {
         va_render_picture: sym!(libva, "vaRenderPicture", FnVaRenderPicture),
         va_end_picture: sym!(libva, "vaEndPicture", FnVaEndPicture),
         va_create_buffer: sym!(libva, "vaCreateBuffer", FnVaCreateBuffer),
+        va_query_config_entrypoints: sym!(
+            libva,
+            "vaQueryConfigEntrypoints",
+            FnVaQueryConfigEntrypoints
+        ),
+        va_get_config_attributes: sym!(
+            libva,
+            "vaGetConfigAttributes",
+            FnVaGetConfigAttributes
+        ),
+        va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
+        va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
+        va_sync_surface: sym!(libva, "vaSyncSurface", FnVaSyncSurface),
+        va_destroy_buffer: sym!(libva, "vaDestroyBuffer", FnVaDestroyBuffer),
+        va_map_buffer: sym!(libva, "vaMapBuffer", FnVaMapBuffer),
+        va_unmap_buffer: sym!(libva, "vaUnmapBuffer", FnVaUnmapBuffer),
+        va_derive_image: sym!(libva, "vaDeriveImage", FnVaDeriveImage),
+        va_destroy_image: sym!(libva, "vaDestroyImage", FnVaDestroyImage),
+        va_get_image: sym!(libva, "vaGetImage", FnVaGetImage),
+        va_put_image: sym!(libva, "vaPutImage", FnVaPutImage),
+        va_create_image: sym!(libva, "vaCreateImage", FnVaCreateImage),
+        va_query_image_formats: sym!(
+            libva,
+            "vaQueryImageFormats",
+            FnVaQueryImageFormats
+        ),
+        va_max_num_image_formats: sym!(
+            libva,
+            "vaMaxNumImageFormats",
+            FnVaMaxNumImageFormats
+        ),
         va_get_display_drm: sym!(libva_drm, "vaGetDisplayDRM", FnVaGetDisplayDRM),
         _va: libva,
         _va_drm: libva_drm,

@@ -37,9 +37,13 @@
 //! algorithm. The workspace's clean-room rule (no embedding source
 //! from libvpx, libwebp, libjxl, etc.) doesn't apply here.
 
+pub mod config;
+pub mod context;
 pub mod display;
 pub mod sys;
 
+pub use config::Config;
+pub use context::Context;
 pub use display::{Display, VaError, VaProfile};
 
 /// Confirm the VA-API framework loads, but do not register any codec
