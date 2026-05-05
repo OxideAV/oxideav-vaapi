@@ -1,0 +1,40 @@
+[package]
+name = "oxideav-vaapi"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-vaapi"
+homepage = "https://github.com/OxideAV/oxideav-vaapi"
+authors = ["Mark Karpeles"]
+description = "Linux VA-API hardware decode/encode bridge for the oxideav framework — runtime-loaded via libloading, no compile-time libva dep"
+readme = "README.md"
+keywords = ["vaapi", "linux", "hardware", "video", "oxideav"]
+categories = ["multimedia::encoding", "multimedia::video", "hardware-support"]
+
+[dependencies]
+# `oxideav-core` is gated behind the default-on `registry` feature so
+# tooling consumers can depend on `oxideav-vaapi` with
+# `default-features = false` and avoid the framework dependency tree.
+oxideav-core = { version = "0.1", optional = true }
+
+# libloading is only pulled on Linux targets — every non-linux build
+# ships a stub `register()` that's a no-op (the entire crate body is
+# `#![cfg(target_os = "linux")]`).
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"
+# Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
+# via the `oxideav_core::register!` macro. Linux-only because the
+# entire crate body is `#![cfg(target_os = "linux")]`. Optional +
+# gated behind `registry` so default-features=false consumers don't
+# pull it in.
+linkme = { version = "0.3", optional = true }
+
+[features]
+default = ["registry"]
+
+# Wires up the codec/encoder/decoder trait implementations against
+# `oxideav-core` so the crate can plug into the `oxideav` framework
+# registry. Default-on; turn off for tooling that just wants the raw
+# VA-API bridge bindings without the framework.
+registry = ["dep:oxideav-core", "dep:linkme"]
