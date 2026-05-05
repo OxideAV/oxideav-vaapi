@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 4 (capability probing API + driver-reality findings)
+
+- New `Display` capability methods built on `vaQueryConfigEntrypoints`:
+  - `Display::entrypoints(VaProfile) -> Result<Vec<i32>, VaError>` —
+    list every entrypoint the driver advertises for a given profile.
+    Maps `VA_STATUS_ERROR_UNSUPPORTED_PROFILE` to `Ok(Vec::new())` so
+    capability audits don't have to special-case `Err`.
+  - `Display::is_supported(VaProfile, entrypoint) -> bool` —
+    convenience yes/no check; swallows errors as `false` so callers
+    don't drown in `Result<bool>` for a question that's structurally
+    boolean.
+  - `Display::profiles_with_entrypoint(entrypoint) -> Result<Vec<VaProfile>, VaError>`
+    — filter the full profile list to those that advertise a given
+    entrypoint. Useful for "which codecs can I decode?" /
+    "which codecs can I encode?" capability dumps.
+- Extended `VaProfile::name()` to identify the wider set of profiles
+  the dev box surfaces (MPEG-2 Simple/Main, VC1 Simple/Main/Advanced,
+  H.264 ConstrainedBaseline, JPEG Baseline, VP8, VP9 Profile 0/2,
+  HEVC Main/Main10/Main12/Main444/Main444_10/Main444_12, AV1
+  Profile 0/1).
+- Added the matching `VAProfile*` constants in `sys::profile`.
+- New integration tests in `tests/round4_capabilities.rs` (5 passing,
+  1 `#[ignore]`'d for NVDEC-specific driver-truth):
+  - `entrypoints_for_h264_high_includes_vld`
+  - `is_supported_recognises_h264_decode`
+  - `is_supported_for_unsupported_entrypoint_is_false`
+  - `decode_profile_set_is_non_empty`
+  - `entrypoints_for_unsupported_profile_handled_gracefully`
+  - `encode_unavailable_on_nvdec_backend` (`#[ignore]`'d)
+- New `tests/capability_dump.rs` — `--ignored` diagnostic test that
+  prints the full `(profile, entrypoint, RTFormat)` matrix and a
+  decode/encode summary. Canonical command-line probe for hosts.
+
+### Findings — Round 4 (Path A: VA-API encode is structurally impossible
+### on `nvidia-vaapi-driver`)
+
+The `nvidia-vaapi-driver 0.0.16` shim wraps NVDEC, NVIDIA's hardware
+**decode** engine. `vaQueryConfigEntrypoints` for **every** advertised
+profile (H.264 Main/High/ConstrainedBaseline, HEVC Main/Main10/Main12/
+Main444 family, AV1 Profile 0, VP8, VP9 Profile 0/2, VC1 Simple/Main/
+Advanced, MPEG-2 Simple/Main) returns the single entrypoint
+`VAEntrypointVLD = 1`. No `EncSlice`, no `EncSliceLP`, no
+`EncPicture`. `vaCreateConfig` for any `(profile, EncSlice)` pair
+fails with `VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT (13)`: *"the
+requested VAEntryPoint is not supported"*.
+
+The Round 4 strategy of "if decode silently fails, try encode"
+therefore has no path on this hardware via VA-API. NVENC (NVIDIA's
+hardware encode engine) is exposed through NVENC-direct (used by the
+`oxideav-nvidia` sibling crate) and through CUDA/Vulkan Video; the
+VA-API frontend does not bridge to NVENC at all.
+
+The `capability_dump` test confirms this on demand. The
+`encode_unavailable_on_nvdec_backend` test asserts it programmatically
+(skipped on non-NVDEC hosts).
+
+### Findings — Round 4 (Path B: decode wall remains; not landed this round)
+
+The Round 3 H.264 decode silent-fail (parameter buffers accepted,
+surface returns constant 0x80) is unresolved. With encode ruled out
+structurally and per the workspace clean-room policy (no consulting
+`nvidia-vaapi-driver` source / ffmpeg vaapi.c / gstreamer-vaapi /
+third-party Rust VA-API bindings), debugging the silent-fail requires
+either:
+
+1. A second VA-API driver on the box (Intel iGPU, AMD GPU, or
+   `mesa-va-gallium`) to cross-validate parameter-buffer setups
+   against, or
+2. Tens of thousands of lines of bitstream parsing per codec for
+   HEVC / AV1 / VP9 / VP8, each of which is independently at risk of
+   the same silent-fail wall (different NVDEC code paths but the same
+   driver dispatch surface).
+
+Neither is achievable in one round without bloating the crate beyond
+its bridge mandate. Proper bitstream parsing belongs in
+`oxideav-h264` / `oxideav-hevc` / `oxideav-av1` / `oxideav-vp9` /
+`oxideav-vp8`, where it's reusable across all hardware backends
+(VA-API, NVENC, VDPAU, Vulkan Video, VideoToolbox). When those crates
+land their parsers, this crate provides the pipeline glue
+(`Config` / `Context` / planned `Surface` / `Buffer` / `Picture`
+helpers) — and the capability-probing API added in this round is what
+they will use to skip-detect what the driver can actually accelerate.
+
+### Status — Round 4 deliverable
+
+This round ships the capability-probing API, the codified driver-truth
+findings, and the diagnostic `capability_dump` infrastructure. **No
+codec factories register**: there is nothing on this hardware that
+the bridge can usefully wire up via VA-API today, and the framework
+already falls back to the pure-Rust path for every codec id. The
+crate's value in Round 4 is that capability audits (`oxideav list`,
+future codec crates' priority resolution) can now ask "does this
+host's VA-API stack accelerate codec X for operation Y?" and get a
+correct answer in O(1) calls.
+
 ### Added — Round 3 (Tier A: decode pipeline scaffolding)
 
 - New `config` module — safe wrapper around `VAConfigID`.

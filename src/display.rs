@@ -51,11 +51,27 @@ impl VaProfile {
     pub fn name(self) -> String {
         match self.0 {
             profile::VAProfileNone => "VAProfileNone".into(),
+            profile::VAProfileMPEG2Simple => "VAProfileMPEG2Simple".into(),
+            profile::VAProfileMPEG2Main => "VAProfileMPEG2Main".into(),
             profile::VAProfileH264Baseline => "VAProfileH264Baseline".into(),
             profile::VAProfileH264Main => "VAProfileH264Main".into(),
             profile::VAProfileH264High => "VAProfileH264High".into(),
+            profile::VAProfileVC1Simple => "VAProfileVC1Simple".into(),
+            profile::VAProfileVC1Main => "VAProfileVC1Main".into(),
+            profile::VAProfileVC1Advanced => "VAProfileVC1Advanced".into(),
+            profile::VAProfileJPEGBaseline => "VAProfileJPEGBaseline".into(),
+            profile::VAProfileH264ConstrainedBaseline => {
+                "VAProfileH264ConstrainedBaseline".into()
+            }
+            profile::VAProfileVP8Version0_3 => "VAProfileVP8Version0_3".into(),
             profile::VAProfileHEVCMain => "VAProfileHEVCMain".into(),
             profile::VAProfileHEVCMain10 => "VAProfileHEVCMain10".into(),
+            profile::VAProfileVP9Profile0 => "VAProfileVP9Profile0".into(),
+            profile::VAProfileVP9Profile2 => "VAProfileVP9Profile2".into(),
+            profile::VAProfileHEVCMain12 => "VAProfileHEVCMain12".into(),
+            profile::VAProfileHEVCMain444 => "VAProfileHEVCMain444".into(),
+            profile::VAProfileHEVCMain444_10 => "VAProfileHEVCMain444_10".into(),
+            profile::VAProfileHEVCMain444_12 => "VAProfileHEVCMain444_12".into(),
             profile::VAProfileAV1Profile0 => "VAProfileAV1Profile0".into(),
             profile::VAProfileAV1Profile1 => "VAProfileAV1Profile1".into(),
             n => format!("VAProfile({n})"),
@@ -253,6 +269,77 @@ impl Display {
             return Ok(Vec::new());
         }
         Ok(buf.into_iter().take(num as usize).map(VaProfile).collect())
+    }
+
+    /// List the entrypoints the driver advertises for a given profile.
+    ///
+    /// Wraps `vaQueryConfigEntrypoints`. Sized via `vaMaxNumEntrypoints`
+    /// (capped at 32 — VA-API entrypoint enum has 12 values today, so
+    /// the cap is generous and avoids a second dispatch round-trip).
+    ///
+    /// Returns an empty `Vec` if the profile is not supported by the
+    /// driver (libva returns `VA_STATUS_ERROR_UNSUPPORTED_PROFILE` in
+    /// that case — we map it to "no entrypoints" so a capability
+    /// audit doesn't have to special-case `Err`).
+    pub fn entrypoints(&self, profile: VaProfile) -> Result<Vec<i32>, VaError> {
+        let vt = sys::vtable().map_err(|e| VaError::Sys(e.to_string()))?;
+        // 32 is well above the largest entrypoint enum value (12) — see
+        // `_VAEntrypointMax` in va.h. Stack-allocate to avoid a heap hit.
+        let mut buf: [i32; 32] = [0; 32];
+        let mut num: i32 = 0;
+        // SAFETY: buf is valid for 32 writes; `&mut num` outlives call.
+        let status = unsafe {
+            (vt.va_query_config_entrypoints)(
+                self.dpy,
+                profile.raw(),
+                buf.as_mut_ptr(),
+                &mut num,
+            )
+        };
+        if status == sys::VA_STATUS_ERROR_UNSUPPORTED_PROFILE {
+            return Ok(Vec::new());
+        }
+        if status != VA_STATUS_SUCCESS {
+            return Err(VaError::Va {
+                status,
+                message: error_str(vt, status),
+            });
+        }
+        if num <= 0 {
+            return Ok(Vec::new());
+        }
+        Ok(buf[..num as usize].to_vec())
+    }
+
+    /// True if the driver advertises `entrypoint` for `profile`.
+    ///
+    /// Convenience wrapper around `entrypoints` for the common
+    /// "is this codec/operation pair available?" capability check.
+    /// Returns `false` for any error — the alternative would force
+    /// every caller to handle `Result<bool>` for a query that's
+    /// fundamentally a yes/no.
+    pub fn is_supported(&self, profile: VaProfile, entrypoint: i32) -> bool {
+        match self.entrypoints(profile) {
+            Ok(list) => list.contains(&entrypoint),
+            Err(_) => false,
+        }
+    }
+
+    /// Subset of `profiles()` filtered to those that advertise
+    /// `entrypoint`. Useful for "which codecs can I decode?" or
+    /// "which codecs can I encode?" capability dumps.
+    pub fn profiles_with_entrypoint(
+        &self,
+        entrypoint: i32,
+    ) -> Result<Vec<VaProfile>, VaError> {
+        let all = self.profiles()?;
+        let mut out = Vec::with_capacity(all.len());
+        for p in all {
+            if self.is_supported(p, entrypoint) {
+                out.push(p);
+            }
+        }
+        Ok(out)
     }
 }
 

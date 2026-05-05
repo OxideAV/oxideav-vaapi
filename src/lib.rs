@@ -20,15 +20,27 @@
 //!
 //! # Status
 //!
-//! Round 2 (this commit): a safe [`Display`] wrapper around the DRM
-//! render-node libva backend — opens `/dev/dri/renderD128`, calls
-//! `vaGetDisplayDRM`, runs `vaInitialize`, and surfaces the
-//! driver-supplied error string via [`VaError::Init`] when no
-//! `*_drv_video.so` is installed for the GPU. `vaQueryVendorString`
-//! and `vaQueryConfigProfiles` are wired up for the success path
-//! (used on boxes with an Intel/AMD/installed-NVIDIA-shim driver).
-//! No codec factories yet — those come in Round 3 once we have a
-//! tested-against-driver path.
+//! Round 4 (this commit): capability-probing API plus the driver-
+//! reality findings that came out of investigating Round 3's H.264
+//! decode silent-fail and the planned encode pivot.
+//!
+//! * [`Display::entrypoints`], [`Display::is_supported`], and
+//!   [`Display::profiles_with_entrypoint`] are the public capability
+//!   surface for asking "does this host's VA-API stack accelerate
+//!   codec X for operation Y?" without having to call
+//!   `vaCreateConfig` and pattern-match on its error.
+//! * The diagnostic `capability_dump` integration test prints the
+//!   full `(profile, entrypoint, RTFormat)` matrix and a decode /
+//!   encode summary; canonical for fingerprinting a host's VA-API
+//!   stack.
+//! * On `nvidia-vaapi-driver 0.0.16` (the RTX 5080 dev box this
+//!   crate is developed on) the encode summary is **0 profiles** —
+//!   NVDEC-only by design, NVENC reached separately via
+//!   `oxideav-nvidia`.
+//! * No codec factories register yet. The bridge dlopens libva,
+//!   exposes config/context/capability wrappers, and falls back
+//!   gracefully when the driver lacks a `*_drv_video.so` for the
+//!   GPU.
 //!
 //! # Workspace policy
 //!

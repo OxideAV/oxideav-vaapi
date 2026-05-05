@@ -155,6 +155,12 @@ impl<'d> Drop for Config<'d> {
 /// Standalone helper: query attributes for a `(profile, entrypoint)`
 /// pair without needing to construct a `Config` first. Useful for
 /// capability probing prior to `Config::new`.
+///
+/// `dpy` is treated as an opaque handle — it is forwarded to libva
+/// dispatch and never dereferenced by Rust code. The
+/// `not_unsafe_ptr_arg_deref` clippy lint is allowed here because
+/// the pointer is opaque to this crate and libva owns the lifetime.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn supported_attributes(
     dpy: VADisplay,
     profile: i32,
@@ -199,6 +205,10 @@ pub fn supported_attributes(
 
 /// Standalone helper: read one attribute value for a
 /// `(profile, entrypoint)` pair.
+///
+/// `dpy` is treated as an opaque handle — see
+/// [`supported_attributes`] for the same caveat.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_attribute(
     dpy: VADisplay,
     profile: i32,

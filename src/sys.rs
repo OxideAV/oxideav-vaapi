@@ -71,11 +71,25 @@ pub const VA_STATUS_ERROR_UNKNOWN: VAStatus = -1;
 #[allow(non_upper_case_globals)]
 pub mod profile {
     pub const VAProfileNone: i32 = -1;
+    pub const VAProfileMPEG2Simple: i32 = 0;
+    pub const VAProfileMPEG2Main: i32 = 1;
     pub const VAProfileH264Baseline: i32 = 5;
     pub const VAProfileH264Main: i32 = 6;
     pub const VAProfileH264High: i32 = 7;
+    pub const VAProfileVC1Simple: i32 = 8;
+    pub const VAProfileVC1Main: i32 = 9;
+    pub const VAProfileVC1Advanced: i32 = 10;
+    pub const VAProfileJPEGBaseline: i32 = 12;
+    pub const VAProfileH264ConstrainedBaseline: i32 = 13;
+    pub const VAProfileVP8Version0_3: i32 = 14;
     pub const VAProfileHEVCMain: i32 = 17;
     pub const VAProfileHEVCMain10: i32 = 18;
+    pub const VAProfileVP9Profile0: i32 = 19;
+    pub const VAProfileVP9Profile2: i32 = 21;
+    pub const VAProfileHEVCMain12: i32 = 23;
+    pub const VAProfileHEVCMain444: i32 = 26;
+    pub const VAProfileHEVCMain444_10: i32 = 27;
+    pub const VAProfileHEVCMain444_12: i32 = 28;
     pub const VAProfileAV1Profile0: i32 = 32;
     pub const VAProfileAV1Profile1: i32 = 33;
 }

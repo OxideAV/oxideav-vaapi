@@ -33,25 +33,90 @@ Users who want to force the pure-Rust path globally can pass `--no-hwaccel` to t
 
 | Codec        | Decode | Encode |
 |--------------|--------|--------|
-| H.264        | planned | planned |
-| HEVC         | planned | planned |
-| VP9          | planned | planned |
-| AV1          | planned (Intel Tiger Lake+, AMD RDNA3+) | planned (Intel/AMD where supported) |
+| H.264        | planned | depends on host driver (see below) |
+| HEVC         | planned | depends on host driver |
+| VP9          | planned | depends on host driver |
+| AV1          | planned (Intel Tiger Lake+, AMD RDNA3+) | depends on host driver |
 | VP8          | planned | — |
-| MPEG-2       | planned | planned |
-| JPEG         | planned | planned |
+| MPEG-2       | planned | depends on host driver |
+| JPEG         | planned | depends on host driver |
 | VVC (H.266)  | planned (Intel Lunar Lake+) | — |
 
-Round 2 (this commit): a safe `Display` wrapper around the libva DRM backend.
+Encode availability is **host-driver dependent**. VA-API exposes
+encode only when the underlying driver shim wraps a hardware encoder.
+On Intel iGPUs (`iHD`/`i965`) and AMD GPUs (`mesa-va-gallium`) most
+codecs land an `EncSlice` entrypoint; on NVIDIA via
+`nvidia-vaapi-driver` (NVDEC-only) **no** encode entrypoint is
+exposed — see [`Display::is_supported`](#capability-probing) for
+the runtime check.
 
-- `Display::open_drm("/dev/dri/renderD128")` opens the render-node fd via `libc::open`, calls `vaGetDisplayDRM`, and runs `vaInitialize`. Each step has a precise error variant (`VaError::OpenDrm`, `VaError::GetDisplayNull`, `VaError::Init { status, message }`).
-- `Display::api_version()`, `vendor_string()`, `profiles()` cover the post-init introspection surface.
-- `Drop` calls `vaTerminate` (when init succeeded) and `libc::close` on the fd; nothing leaks on the init-failure path.
-- The `VaError::Init` message comes verbatim from `vaErrorStr`, so on a box without a driver `.so` for the GPU the higher layer surfaces a useful reason (typically `"no driver loaded"` or similar) rather than an opaque code.
+## Capability probing
 
-Tested on hardware against both possible regimes: a working `nvidia-vaapi-driver` (success path — `vendor_string()` returns `"VA-API NVDEC driver [direct backend]"`, ~18 profiles advertised) and a hypothetical no-driver setup (graceful-failure path — `VaError::Init` carries the driver-supplied message). The integration test in `tests/round2_init.rs` is regime-agnostic and passes on both.
+This crate's biggest user-facing API is post-init capability probing,
+because what VA-API drivers actually do varies dramatically by
+vendor / chip / driver version. Three helpers cover the typical
+audit:
 
-No codec factories are registered yet — Round 3 will wire H.264 + HEVC decode via `vaCreateConfig` / `vaCreateContext` / `vaBeginPicture` / `vaRenderPicture` / `vaEndPicture` once the bridge has been validated against a working driver.
+```rust,ignore
+use oxideav_vaapi::{Display, VaProfile};
+use oxideav_vaapi::sys::{profile, entrypoint};
+use std::path::Path;
+
+let dpy = Display::open_drm(Path::new("/dev/dri/renderD128"))?;
+
+// Single yes/no:
+let h264_decode_ok = dpy.is_supported(
+    VaProfile(profile::VAProfileH264High),
+    entrypoint::VAEntrypointVLD,
+);
+
+// Full entrypoint list for a profile:
+let h264_entries = dpy.entrypoints(
+    VaProfile(profile::VAProfileH264High),
+)?;
+
+// All profiles that support a given operation:
+let encode_capable = dpy.profiles_with_entrypoint(
+    entrypoint::VAEntrypointEncSlice,
+)?;
+```
+
+The diagnostic `capability_dump` test (`cargo test -p oxideav-vaapi
+--test capability_dump -- --ignored --nocapture`) prints the full
+`(profile, entrypoint, RTFormat)` matrix and a decode/encode summary
+for the loaded driver. On NVIDIA boxes that summary is currently
+`encode profile(s): 0`.
+
+## Status
+
+Round 4 (this commit): capability-probing API + driver-reality
+findings.
+
+- `Display::entrypoints`, `Display::is_supported`,
+  `Display::profiles_with_entrypoint` — the post-init introspection
+  surface for "what can this host's VA-API actually accelerate?"
+- `tests/capability_dump.rs` — diagnostic dump that fingerprints
+  what the local VA-API driver advertises.
+- Findings on the NVIDIA RTX 5080 + `nvidia-vaapi-driver 0.0.16` dev
+  box: 18 decode profiles, 0 encode profiles. NVENC (the actual
+  NVIDIA encoder hardware) is reached through the `oxideav-nvidia`
+  sibling crate via NVENC-direct, not via VA-API. Round 3's H.264
+  decode silent-fail (parameter buffers accepted, surface returns
+  constant 0x80) remains unresolved on this host without either a
+  second VA-API driver to cross-validate against or a ground-truth
+  bitstream parser landing in `oxideav-h264`.
+
+No codec factories are registered yet — `register()` confirms the
+framework loads and returns. Future rounds register codecs once the
+matching parser crate (`oxideav-h264`, `oxideav-hevc`, …) lands and
+`is_supported` confirms the driver accelerates the codec/operation.
+
+Tested on hardware against both possible regimes: a working
+`nvidia-vaapi-driver` (success path — vendor `"VA-API NVDEC driver
+[direct backend]"`, 18 profiles, all `VLD`-only) and a hypothetical
+no-driver setup (graceful-failure path — `VaError::Init` carries
+the driver-supplied message). The integration tests are regime-
+agnostic and pass on both.
 
 ## Workspace policy
 
