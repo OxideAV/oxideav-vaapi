@@ -51,35 +51,80 @@
 
 pub mod config;
 pub mod context;
+pub mod decoder;
 pub mod display;
 pub mod sys;
 
 pub use config::Config;
 pub use context::Context;
+pub use decoder::{DecodedFrame, H264VaDecoder};
+#[cfg(feature = "registry")]
+pub use decoder::H264VaCodecDecoder;
 pub use display::{Display, VaError, VaProfile};
 
-/// Confirm the VA-API framework loads, but do not register any codec
-/// factories yet.
+/// Confirm the VA-API framework loads and (Round 5) register the
+/// hardware H.264 decoder factory at priority 10.
 ///
-/// Round 2: the [`Display`] wrapper is in place but no codec
-/// factories are registered — those need a working `*_drv_video.so`
-/// driver `.so` to be meaningful, and we want the integration test
-/// suite to demonstrate the graceful no-driver path before wiring
-/// pipeline-visible behaviour.
+/// Round 5: the Round 3 H.264 decode silent-fail wall is RESOLVED.
+/// With the shared [`oxideav_bitstream`] parser populating the
+/// parameter buffers, decode produces a pixel-perfect match against
+/// ffmpeg's reference (mean abs diff = 0/255 on the 320×240 fixture).
+/// The factory is registered with `hardware_accelerated = true` and
+/// priority 10, ahead of the pure-Rust default.
 ///
 /// If `libva.so.2` / `libva-drm.so.2` cannot be loaded (no GPU stack
 /// installed, sandboxed environment, etc.) the function logs and
 /// returns — the runtime falls back to the pure-Rust impls.
 #[cfg(feature = "registry")]
-pub fn register(_ctx: &mut oxideav_core::RuntimeContext) {
+pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
     match sys::framework() {
         Ok(_) => {
-            // Framework loads. Codec factories deferred to Round 3
-            // (see crate-level docs).
+            // Probe whether the live driver actually advertises H.264
+            // High decode (`VLD`). On hosts where the libraries load
+            // but the driver `.so` for the GPU is unavailable, this
+            // returns false and we skip registration so the pure-Rust
+            // path stays the only candidate.
+            if !host_supports_h264_decode() {
+                eprintln!(
+                    "oxideav-vaapi: driver loaded but H.264 High VLD entrypoint not advertised; \
+                     skipping registration"
+                );
+                return;
+            }
+            let info = oxideav_core::CodecInfo::new(oxideav_core::CodecId::new("h264"))
+                .capabilities(
+                    oxideav_core::CodecCapabilities::video("vaapi-h264")
+                        .with_decode()
+                        .with_hardware(true)
+                        .with_priority(10)
+                        .with_max_size(4096, 4096),
+                )
+                .decoder(decoder::h264_decoder_factory);
+            ctx.codecs.register(info);
         }
         Err(e) => {
             eprintln!("oxideav-vaapi: library unavailable, skipping registration: {e}");
         }
+    }
+}
+
+/// True if a working VA-API driver on this host advertises the
+/// `(VAProfileH264High, VAEntrypointVLD)` pair. Used by [`register`]
+/// to skip codec registration on hosts where the dispatcher loaded
+/// libva but no GPU driver shim is installed (the `vaInitialize` path
+/// returns an `Err(VaError::Init)` and we silently skip).
+#[cfg(feature = "registry")]
+fn host_supports_h264_decode() -> bool {
+    use std::path::Path;
+    const RENDER_NODE: &str = "/dev/dri/renderD128";
+    if !Path::new(RENDER_NODE).exists() {
+        return false;
+    }
+    match Display::open_drm(Path::new(RENDER_NODE)) {
+        Ok(dpy) => {
+            dpy.is_supported(VaProfile(sys::profile::VAProfileH264High), sys::entrypoint::VAEntrypointVLD)
+        }
+        Err(_) => false,
     }
 }
 

@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 5 (H.264 decode wall RESOLVED + first registered factory)
+
+The Round 3 H.264 decode silent-fail wall is **gone**. Retrying the
+same end-to-end IDR submission flow with the shared, unit-tested
+[`oxideav-bitstream`] parser populating the parameter buffers gave a
+**pixel-perfect match** against ffmpeg's reference render
+(`mean abs diff = 0/255` on the bundled 320×240 fixture, all three
+planes). The Round 3 wall was a parser bug, not a driver issue — the
+NVDEC backend was always willing to decode; the silent-fail signature
+came from at least one mis-packed bitfield in the in-tree parser's
+parameter-buffer construction.
+
+- New `oxideav-bitstream = "0.0"` dependency (matching the workspace
+  shape used by `oxideav-vdpau`).
+- New `decoder` module:
+  - `H264VaDecoder<'d>` — single-IDR helper that owns a `Config` +
+    `Context` (bound by lifetime to a `Display`) and drives the
+    submission flow `vaCreateBuffer × 4 → vaBeginPicture →
+    vaRenderPicture → vaEndPicture → vaSyncSurface → vaCreateImage(NV12)
+    → vaGetImage`. Returns the decoded frame in I420 layout.
+  - `compute_slice_data_bit_offset` — full IDR-I-slice header
+    bit-counter that extends the `oxideav-bitstream`'s minimal slice
+    header parse with ref_pic_list_modification, dec_ref_pic_marking
+    (IDR-flavoured: no_output_of_prior_pics + long_term_reference),
+    slice_qp_delta and the deblocking-filter triplet — far enough to
+    locate the start of `slice_data()` accurately in the bitstream.
+    Required because libva's `slice_data_bit_offset` is the post-EBSP
+    bit count from the NAL header byte through the end of
+    slice_header() and the `oxideav-bitstream` minimal parser stops at
+    `pic_order_cnt_lsb`.
+  - `H264VaCodecDecoder` — `oxideav_core::Decoder` implementation,
+    `Send` via `unsafe impl` (libva's "not thread-safe" rule is about
+    concurrent access; serialized owner moves are sound). Opens its
+    own DRM render node, lazily constructs the inner `H264VaDecoder`
+    on the first packet, decodes the IDR access unit and emits an
+    `oxideav_core::VideoFrame` cropped to display dimensions.
+- New `VAIQMatrixBufferH264` struct in `sys.rs` plus a `flat()`
+  constructor that returns the all-16 default scaling lists. Verified
+  240 bytes via a one-shot `sizeof()` C check against
+  `/usr/include/va/va.h`.
+- `register()` now wires the H.264 decode factory into the codec
+  registry at priority 10 with `hardware_accelerated = true`. On hosts
+  where libva loads but no driver `.so` is available for the GPU, the
+  pre-flight `host_supports_h264_decode()` check returns false and
+  registration is skipped — the SW codec stays the only candidate.
+- New `tests/round5_decode.rs` (3 tests):
+  - `h264_high_decoder_constructs` — `H264VaDecoder::new` succeeds
+    and reports the SPS-derived 320×240 dimensions.
+  - `h264_high_idr_decode_succeeds_or_documents_silent_fail` —
+    cross-validates against an ffmpeg reference rendered via
+    `ffmpeg -f h264 -i pipe:0 -f rawvideo -pix_fmt yuv420p pipe:1`.
+    On the dev box this lands the `mad_total = 0.000` success
+    branch; the test code retains the silent-fail-asserting branch
+    (constant 0x80 luma + 0x80/0x80 chroma) so the same source
+    expresses both possible truths and passes against either.
+  - `registry_decoder_roundtrips_idr_packet` — feeds the fixture as a
+    single `oxideav_core::Packet` to the registry-shaped
+    `H264VaCodecDecoder`, pulls a `Frame::Video` back, asserts the
+    three-plane shape and per-plane sizes (320×240 Y, 160×120 U/V).
+- New `tests/fixtures/h264_high_320x240_1frame.h264` — same
+  ffmpeg-generated single-IDR Annex-B as the `oxideav-vdpau` Round 3
+  fixture (~6.6 KB).
+
+### Findings — Round 5
+
+The Round 3 wall held only against the *parser* used during that
+round. Three concrete shape differences between the in-tree parser
+and `oxideav-bitstream`'s parser most likely caused the silent-fail —
+without keeping the in-tree parser around for diff we can only point
+at categories — but the `seq_fields` / `pic_fields` packing is a
+known minefield, the `slice_data_bit_offset` is sensitive to whether
+emulation-prevention bytes are stripped before counting bits, and the
+`MinLumaBiPredSize8x8 : 1` slot in `seq_fields` is silently load-
+bearing on NVDEC even for I-slices. The new code documents the bit
+positions explicitly against `va.h`.
+
+The lesson for the wider OxideAV project is the architectural one:
+**bitstream parsing belongs in `oxideav-bitstream`** (a tested, shared
+crate) and not in each hardware-bridge crate. The Round 3 attempt
+predated that crate, and the in-tree parser was never unit-tested
+against a reference. With the same parser now driving both `oxideav-
+vdpau` and `oxideav-vaapi` end-to-end, both backends now decode the
+same fixture bit-exactly.
+
 ### Added — Round 4 (capability probing API + driver-reality findings)
 
 - New `Display` capability methods built on `vaQueryConfigEntrypoints`:

@@ -29,6 +29,14 @@ libloading = "0.8"
 # `libc::open` is the same shape as calling `dlopen`, both are
 # platform interfaces.
 libc = "0.2"
+# Shared minimal IDR/keyframe header parser — H.264 / HEVC / AV1.
+# The vaapi bridge feeds parsed SPS/PPS/slice fields into the
+# `VAPictureParameterBufferH264` / `VAPictureParameterBufferHEVC`
+# parameter buffers. Standalone-publishable crates depend on each
+# other via plain `version = "0.0"` strings; the workspace
+# `[patch.crates-io]` entry redirects local builds to
+# `crates/oxideav-bitstream/`.
+oxideav-bitstream = "0.0"
 # Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
 # via the `oxideav_core::register!` macro. Linux-only because the
 # entire crate body is `#![cfg(target_os = "linux")]`. Optional +

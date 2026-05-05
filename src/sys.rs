@@ -246,6 +246,33 @@ pub struct VAPictureParameterBufferH264 {
     pub va_reserved: [u32; VA_PADDING_MEDIUM],
 }
 
+/// `VAIQMatrixBufferH264` — H.264 inverse quantization matrices. Two
+/// arrays in raster scan order: 6×16 4×4 lists and 2×64 8×8 lists.
+/// When the SPS / PPS scaling matrix flags are unset, every entry must
+/// be `16` (flat default per H.264 7.4.2.1.1 / 8.5.5).
+#[repr(C)]
+#[derive(Copy, Clone, Debug)]
+pub struct VAIQMatrixBufferH264 {
+    pub scaling_list_4x4: [[u8; 16]; 6],
+    pub scaling_list_8x8: [[u8; 64]; 2],
+    pub va_reserved: [u32; VA_PADDING_LOW],
+}
+
+impl VAIQMatrixBufferH264 {
+    /// Flat 16/16 scaling lists — what the encoder produces when
+    /// `seq_scaling_matrix_present_flag` and
+    /// `pic_scaling_matrix_present_flag` are both 0 (which is the case
+    /// for the test fixture and for ffmpeg `-preset ultrafast` output
+    /// generally).
+    pub fn flat() -> Self {
+        Self {
+            scaling_list_4x4: [[16; 16]; 6],
+            scaling_list_8x8: [[16; 64]; 2],
+            va_reserved: [0; VA_PADDING_LOW],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct VASliceParameterBufferH264 {
