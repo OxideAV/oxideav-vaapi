@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 6 (engine probe — DRI render-node enumeration + per-codec caps)
+
+Wires up Phase 1's [`oxideav_core::engine::EngineProbeFn`] contract so
+`oxideav list` and any other consumer can ask the VA-API bridge "which
+engines do you see, and what can each do?" without spinning up a
+decoder.
+
+- New `engine` module gated behind the default-on `registry` feature
+  (the [`HwDeviceInfo`] / [`HwCodecCaps`] return types live in
+  `oxideav-core`):
+  - `pub fn engine_info() -> Vec<HwDeviceInfo>` walks the standard
+    DRM render-node range `/dev/dri/renderD128`..`renderD191`,
+    skips nodes that don't exist, opens each existing one with
+    [`Display::open_drm`], and silently skips nodes whose libva
+    driver refuses to load (the standard "node exists but the GPU
+    driver doesn't bind" case — on this dev box renderD129 is the
+    second NVIDIA GPU's render node where libva falls through to
+    iHD/i965 and bails).
+  - Per-device entry:
+    - `name`: vendor string + render-node basename, so multi-GPU
+      hosts producing the same vendor string still get unique
+      device names (e.g. `"VA-API NVDEC driver [direct backend]
+      (renderD128)"`).
+    - `api_version`: `"VA-API <major>.<minor>"` from
+      [`Display::api_version`].
+    - `extra`: includes `("dri_node", "/dev/dri/renderD128")`.
+    - `codecs`: one [`HwCodecCaps`] per codec family (h264 / hevc /
+      av1 / vp8 / vp9 / mpeg2 / vc1) with at least one advertised
+      profile. Decode/encode flags are any-of-family; max
+      width/height come from `vaGetConfigAttributes` on the highest
+      advertised profile (fallback `None` when the driver returns
+      `VA_ATTRIB_NOT_SUPPORTED` or a sentinel `0`); `profiles`
+      lists the [`VaProfile::name`] string for every advertised
+      family profile.
+- `register()` now chains `.with_engine_id("vaapi")` and
+  `.with_engine_probe(engine_info)` onto the H.264 [`CodecInfo`] so
+  the CLI can group all VA-API codec entries by engine and call the
+  probe at most once per pass.
+- New `tests/round6_engine_info.rs`:
+  - `engine_info_finds_render_node_or_skips` — dumps the first
+    device, asserts non-empty vendor + advertised api_version + an
+    h264 entry with `decode = true`. Skip-friendly when no render
+    node is present.
+  - `engine_info_does_not_panic_when_called_twice` — confirms the
+    probe is callable repeatedly (consumers may dedupe by engine id
+    and call once per pass, but the contract is "idempotent + safe
+    to call multiple times").
+
+### Findings — Round 6
+
+On the dev box (RTX 5080 + nvidia-vaapi-driver 0.0.16 + libva 1.22):
+
+- 2 render nodes exist (`/dev/dri/renderD128`, `renderD129`);
+  `engine_info()` reports 1 working device because the nvidia
+  driver shim binds to renderD128 only — opening renderD129
+  through libva falls through to the iHD/i965 fallbacks and
+  returns `VaError::Init`.
+- The single device exposes decode-only caps (`encode = false`)
+  for every codec family, matching the Round 4 finding that
+  nvidia-vaapi-driver is NVDEC-only.
+- `MaxPictureWidth` / `MaxPictureHeight` come back as `0` from this
+  driver — the engine module treats `0` as `None` (the alternative
+  `Some(0)` would be a misleading "max dimension is zero" report
+  to consumers like the CLI).
+
 ### Added — Round 5 (H.264 decode wall RESOLVED + first registered factory)
 
 The Round 3 H.264 decode silent-fail wall is **gone**. Retrying the

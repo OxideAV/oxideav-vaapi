@@ -53,6 +53,8 @@ pub mod config;
 pub mod context;
 pub mod decoder;
 pub mod display;
+#[cfg(feature = "registry")]
+pub mod engine;
 pub mod sys;
 
 pub use config::Config;
@@ -61,6 +63,8 @@ pub use decoder::{DecodedFrame, H264VaDecoder};
 #[cfg(feature = "registry")]
 pub use decoder::H264VaCodecDecoder;
 pub use display::{Display, VaError, VaProfile};
+#[cfg(feature = "registry")]
+pub use engine::engine_info;
 
 /// Confirm the VA-API framework loads and (Round 5) register the
 /// hardware H.264 decoder factory at priority 10.
@@ -99,7 +103,9 @@ pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
                         .with_priority(10)
                         .with_max_size(4096, 4096),
                 )
-                .decoder(decoder::h264_decoder_factory);
+                .decoder(decoder::h264_decoder_factory)
+                .with_engine_id("vaapi")
+                .with_engine_probe(engine::engine_info);
             ctx.codecs.register(info);
         }
         Err(e) => {
