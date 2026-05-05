@@ -23,6 +23,12 @@ oxideav-core = { version = "0.1", optional = true }
 # `#![cfg(target_os = "linux")]`).
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8"
+# `libc` is a thin, well-vetted set of POSIX constants/typedefs used
+# only for `open`/`close` of the DRM render node. Treated like a
+# standard binding, NOT a competing implementation — calling
+# `libc::open` is the same shape as calling `dlopen`, both are
+# platform interfaces.
+libc = "0.2"
 # Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
 # via the `oxideav_core::register!` macro. Linux-only because the
 # entire crate body is `#![cfg(target_os = "linux")]`. Optional +

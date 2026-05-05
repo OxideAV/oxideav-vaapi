@@ -20,11 +20,15 @@
 //!
 //! # Status
 //!
-//! Round 1 (this commit): scaffolding only. The framework load is
-//! verified via `sys::framework()`; no codec factories are wired up
-//! yet. Round 2 will add H.264 + HEVC decode via `vaCreateConfig`,
-//! `vaCreateContext`, `vaBeginPicture`, `vaRenderPicture`,
-//! `vaEndPicture`.
+//! Round 2 (this commit): a safe [`Display`] wrapper around the DRM
+//! render-node libva backend — opens `/dev/dri/renderD128`, calls
+//! `vaGetDisplayDRM`, runs `vaInitialize`, and surfaces the
+//! driver-supplied error string via [`VaError::Init`] when no
+//! `*_drv_video.so` is installed for the GPU. `vaQueryVendorString`
+//! and `vaQueryConfigProfiles` are wired up for the success path
+//! (used on boxes with an Intel/AMD/installed-NVIDIA-shim driver).
+//! No codec factories yet — those come in Round 3 once we have a
+//! tested-against-driver path.
 //!
 //! # Workspace policy
 //!
@@ -33,10 +37,19 @@
 //! algorithm. The workspace's clean-room rule (no embedding source
 //! from libvpx, libwebp, libjxl, etc.) doesn't apply here.
 
+pub mod display;
 pub mod sys;
 
+pub use display::{Display, VaError, VaProfile};
+
 /// Confirm the VA-API framework loads, but do not register any codec
-/// factories yet (Round 1 scaffolding).
+/// factories yet.
+///
+/// Round 2: the [`Display`] wrapper is in place but no codec
+/// factories are registered — those need a working `*_drv_video.so`
+/// driver `.so` to be meaningful, and we want the integration test
+/// suite to demonstrate the graceful no-driver path before wiring
+/// pipeline-visible behaviour.
 ///
 /// If `libva.so.2` / `libva-drm.so.2` cannot be loaded (no GPU stack
 /// installed, sandboxed environment, etc.) the function logs and
@@ -45,7 +58,8 @@ pub mod sys;
 pub fn register(_ctx: &mut oxideav_core::RuntimeContext) {
     match sys::framework() {
         Ok(_) => {
-            // Round 1: framework loads. No factories wired up yet.
+            // Framework loads. Codec factories deferred to Round 3
+            // (see crate-level docs).
         }
         Err(e) => {
             eprintln!("oxideav-vaapi: library unavailable, skipping registration: {e}");

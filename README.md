@@ -42,7 +42,16 @@ Users who want to force the pure-Rust path globally can pass `--no-hwaccel` to t
 | JPEG         | planned | planned |
 | VVC (H.266)  | planned (Intel Lunar Lake+) | — |
 
-Round 1 (this commit): scaffolding only. The crate dlopens `libva.so.2` + `libva-drm.so.2`, resolves a small bootstrap symbol set, and exposes a `register(&mut RuntimeContext)` entry point that confirms the framework loads without registering any codec factories yet. Round 2: H.264 + HEVC decode via `vaCreateConfig` / `vaCreateContext` / `vaBeginPicture` / `vaRenderPicture` / `vaEndPicture`.
+Round 2 (this commit): a safe `Display` wrapper around the libva DRM backend.
+
+- `Display::open_drm("/dev/dri/renderD128")` opens the render-node fd via `libc::open`, calls `vaGetDisplayDRM`, and runs `vaInitialize`. Each step has a precise error variant (`VaError::OpenDrm`, `VaError::GetDisplayNull`, `VaError::Init { status, message }`).
+- `Display::api_version()`, `vendor_string()`, `profiles()` cover the post-init introspection surface.
+- `Drop` calls `vaTerminate` (when init succeeded) and `libc::close` on the fd; nothing leaks on the init-failure path.
+- The `VaError::Init` message comes verbatim from `vaErrorStr`, so on a box without a driver `.so` for the GPU the higher layer surfaces a useful reason (typically `"no driver loaded"` or similar) rather than an opaque code.
+
+Tested on hardware against both possible regimes: a working `nvidia-vaapi-driver` (success path — `vendor_string()` returns `"VA-API NVDEC driver [direct backend]"`, ~18 profiles advertised) and a hypothetical no-driver setup (graceful-failure path — `VaError::Init` carries the driver-supplied message). The integration test in `tests/round2_init.rs` is regime-agnostic and passes on both.
+
+No codec factories are registered yet — Round 3 will wire H.264 + HEVC decode via `vaCreateConfig` / `vaCreateContext` / `vaBeginPicture` / `vaRenderPicture` / `vaEndPicture` once the bridge has been validated against a working driver.
 
 ## Workspace policy
 

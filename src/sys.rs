@@ -34,10 +34,55 @@ pub type VASurfaceID = u32;
 pub type VABufferID = u32;
 
 /// VAStatus — return code for almost every libva entry point.
+///
+/// Spec defines this as a bare `int`; on every supported ABI that's a
+/// 32-bit signed value. Constants in `va.h` are written as unsigned
+/// hex but fit in `i32` (well within `0x..0026`). The sole exception
+/// is `VA_STATUS_ERROR_UNKNOWN = 0xFFFFFFFF`, which sign-extends to
+/// `-1` here.
 pub type VAStatus = i32;
 
 /// Success status: `VA_STATUS_SUCCESS == 0`.
 pub const VA_STATUS_SUCCESS: VAStatus = 0;
+pub const VA_STATUS_ERROR_OPERATION_FAILED: VAStatus = 0x0000_0001;
+pub const VA_STATUS_ERROR_ALLOCATION_FAILED: VAStatus = 0x0000_0002;
+pub const VA_STATUS_ERROR_INVALID_DISPLAY: VAStatus = 0x0000_0003;
+pub const VA_STATUS_ERROR_INVALID_CONFIG: VAStatus = 0x0000_0004;
+pub const VA_STATUS_ERROR_INVALID_CONTEXT: VAStatus = 0x0000_0005;
+pub const VA_STATUS_ERROR_UNSUPPORTED_PROFILE: VAStatus = 0x0000_000c;
+pub const VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT: VAStatus = 0x0000_000d;
+pub const VA_STATUS_ERROR_INVALID_PARAMETER: VAStatus = 0x0000_0012;
+pub const VA_STATUS_ERROR_UNIMPLEMENTED: VAStatus = 0x0000_0014;
+/// `0xFFFFFFFF` sign-extends to `-1` on the 32-bit signed `VAStatus`.
+pub const VA_STATUS_ERROR_UNKNOWN: VAStatus = -1;
+
+// ─────────────────────────── VAProfile / VAEntrypoint ─────────────────────────
+
+/// Subset of `VAProfile` values we care about for codec selection.
+///
+/// Full enum is large and most variants aren't relevant for the codecs
+/// oxideav implements. Verbatim values from `/usr/include/va/va.h`.
+#[allow(non_upper_case_globals)]
+pub mod profile {
+    pub const VAProfileNone: i32 = -1;
+    pub const VAProfileH264Baseline: i32 = 5;
+    pub const VAProfileH264Main: i32 = 6;
+    pub const VAProfileH264High: i32 = 7;
+    pub const VAProfileHEVCMain: i32 = 17;
+    pub const VAProfileHEVCMain10: i32 = 18;
+    pub const VAProfileAV1Profile0: i32 = 32;
+    pub const VAProfileAV1Profile1: i32 = 33;
+}
+
+/// Subset of `VAEntrypoint` values we care about. Verbatim from
+/// `/usr/include/va/va.h`.
+#[allow(non_upper_case_globals)]
+pub mod entrypoint {
+    pub const VAEntrypointVLD: i32 = 1; // decode
+    pub const VAEntrypointEncSlice: i32 = 6; // encode (slice level)
+    pub const VAEntrypointEncSliceLP: i32 = 8; // encode low-power
+    pub const VAEntrypointVideoProc: i32 = 10; // pre/post-processing
+}
 
 // ─────────────────────────── function pointer types ──────────────────────────
 
@@ -51,6 +96,10 @@ pub type FnVaInitialize = unsafe extern "C" fn(
 pub type FnVaTerminate = unsafe extern "C" fn(dpy: VADisplay) -> VAStatus;
 
 pub type FnVaErrorStr = unsafe extern "C" fn(error_status: VAStatus) -> *const c_char;
+
+pub type FnVaQueryVendorString = unsafe extern "C" fn(dpy: VADisplay) -> *const c_char;
+
+pub type FnVaMaxNumProfiles = unsafe extern "C" fn(dpy: VADisplay) -> i32;
 
 pub type FnVaQueryConfigProfiles = unsafe extern "C" fn(
     dpy: VADisplay,
@@ -136,6 +185,8 @@ pub struct Vtable {
     pub va_initialize: FnVaInitialize,
     pub va_terminate: FnVaTerminate,
     pub va_error_str: FnVaErrorStr,
+    pub va_query_vendor_string: FnVaQueryVendorString,
+    pub va_max_num_profiles: FnVaMaxNumProfiles,
     pub va_query_config_profiles: FnVaQueryConfigProfiles,
     pub va_create_config: FnVaCreateConfig,
     pub va_create_context: FnVaCreateContext,
@@ -208,6 +259,12 @@ fn load_vtable() -> Result<Vtable, String> {
         va_initialize: sym!(libva, "vaInitialize", FnVaInitialize),
         va_terminate: sym!(libva, "vaTerminate", FnVaTerminate),
         va_error_str: sym!(libva, "vaErrorStr", FnVaErrorStr),
+        va_query_vendor_string: sym!(
+            libva,
+            "vaQueryVendorString",
+            FnVaQueryVendorString
+        ),
+        va_max_num_profiles: sym!(libva, "vaMaxNumProfiles", FnVaMaxNumProfiles),
         va_query_config_profiles: sym!(
             libva,
             "vaQueryConfigProfiles",
@@ -231,6 +288,21 @@ fn open(path: &str) -> Result<Library, String> {
     // SAFETY: dlopen on a soname with no init callbacks; equivalent to
     // a normal program startup load.
     unsafe { Library::new(path) }.map_err(|e| format!("dlopen {path}: {e}"))
+}
+
+/// Decode a `vaErrorStr` return into a Rust `String`. Returns a
+/// fallback if the driver hands back a null pointer (it shouldn't for
+/// known status codes, but treat it defensively).
+pub fn error_str(vt: &Vtable, status: VAStatus) -> String {
+    let p = unsafe { (vt.va_error_str)(status) };
+    if p.is_null() {
+        return format!("VAStatus 0x{:x}", status as u32);
+    }
+    // SAFETY: `vaErrorStr` returns a pointer to a static C string in
+    // libva. The pointer is valid for the lifetime of the process and
+    // the bytes are NUL-terminated.
+    let cstr = unsafe { std::ffi::CStr::from_ptr(p) };
+    cstr.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
