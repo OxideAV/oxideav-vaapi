@@ -6,7 +6,11 @@
 //! Round 3 in-tree parser. The submission flow is:
 //!
 //! 1. `oxideav_bitstream::h264::parse_idr_only(stream)` → SPS + PPS +
-//!    IDR slice header + slice data slab.
+//!    IDR slice header + slice data slab. (For streaming use, the
+//!    `H264VaCodecDecoder` adapter splits on Annex-B boundaries and
+//!    caches SPS/PPS across packets so that a slice-only packet can be
+//!    decoded against the SPS/PPS seen on a previous packet — same
+//!    statefulness `cuvidParser` provides on the NVDEC side.)
 //! 2. Build [`VAPictureParameterBufferH264`],
 //!    [`VASliceParameterBufferH264`] and [`VAIQMatrixBufferH264`] from
 //!    the parsed structs.
@@ -86,10 +90,18 @@ impl<'d> H264VaDecoder<'d> {
     /// H.264 High at the SPS-derived coded dimensions.
     pub fn new(dpy: &'d Display, annex_b: &[u8]) -> Result<Self, VaError> {
         let parsed = bs_h264::parse_idr_only(annex_b)?;
-        let coded_width = parsed.sps.coded_width();
-        let coded_height = parsed.sps.coded_height();
-        let display_width = parsed.sps.display_width();
-        let display_height = parsed.sps.display_height();
+        Self::from_sps(dpy, &parsed.sps)
+    }
+
+    /// Build a decoder from an already-parsed SPS. Used by the
+    /// streaming registry adapter that caches SPS/PPS across packets
+    /// and constructs the inner decoder lazily once the first SPS NAL
+    /// has been observed.
+    pub fn from_sps(dpy: &'d Display, sps: &bs_h264::H264Sps) -> Result<Self, VaError> {
+        let coded_width = sps.coded_width();
+        let coded_height = sps.coded_height();
+        let display_width = sps.display_width();
+        let display_height = sps.display_height();
 
         let config = Config::new(
             dpy,
@@ -149,24 +161,44 @@ impl<'d> H264VaDecoder<'d> {
     /// `oxideav-vdpau` does for VDPAU.
     pub fn decode_idr(&self, annex_b: &[u8]) -> Result<DecodedFrame, VaError> {
         let parsed = bs_h264::parse_idr_only(annex_b)?;
+        self.decode_slice(
+            &parsed.sps,
+            &parsed.pps,
+            &parsed.slice_header,
+            bs_h264::NAL_TYPE_IDR,
+            parsed.idr_access_unit,
+        )
+    }
 
+    /// Decode a single H.264 slice given the cached SPS/PPS the slice
+    /// references. Used by the streaming registry adapter where SPS
+    /// and PPS may have been parsed from earlier packets, but the
+    /// current packet contains only slice data.
+    ///
+    /// `slice_access_unit` must start with an Annex-B start code
+    /// followed by the slice NAL (header byte + EBSP).
+    pub fn decode_slice(
+        &self,
+        sps: &bs_h264::H264Sps,
+        pps: &bs_h264::H264Pps,
+        slice_header: &bs_h264::H264SliceHeader,
+        nal_unit_type: u8,
+        slice_access_unit: &[u8],
+    ) -> Result<DecodedFrame, VaError> {
         // Compute the absolute bit offset (from the start of the NAL
         // header byte, after emulation-prevention stripping) of the
         // start of slice_data() — VA-API requires this so the GPU
         // bitstream extractor knows where to begin entropy-decoding.
         let slice_data_bit_offset =
-            compute_slice_data_bit_offset(&parsed, bs_h264::NAL_TYPE_IDR)?;
+            compute_slice_data_bit_offset(sps, pps, nal_unit_type, slice_access_unit)?;
 
         // Build parameter buffers.
-        let mut pic_param = build_pic_param(&parsed, self.surface());
+        let mut pic_param = build_pic_param(sps, pps, slice_header, self.surface());
         let mut iq_matrix = VAIQMatrixBufferH264::flat();
 
-        // The slice data we submit to the GPU is the IDR NAL itself
+        // The slice data we submit to the GPU is the slice NAL itself
         // (start code + NAL header + slice_header + slice_data + …).
-        // `parsed.idr_access_unit` is exactly the bytes from the first
-        // start-code byte through end-of-input, which for a one-frame
-        // file is the IDR NAL plus optional trailing zero-padding.
-        let slice_data: &[u8] = parsed.idr_access_unit;
+        let slice_data: &[u8] = slice_access_unit;
 
         // The slice_data_offset field in VASliceParameterBufferH264
         // points at the NAL header byte (i.e. just past the start
@@ -175,7 +207,9 @@ impl<'d> H264VaDecoder<'d> {
         let nal_header_offset = start_code_len(slice_data) as u32;
 
         let mut slice_param = build_slice_param(
-            &parsed,
+            pps,
+            slice_header,
+            nal_unit_type,
             slice_data.len() as u32,
             nal_header_offset,
             slice_data_bit_offset,
@@ -434,14 +468,14 @@ fn start_code_len(slice_data: &[u8]) -> usize {
     }
 }
 
-/// Build the H.264 picture parameter buffer from a parsed IDR.
+/// Build the H.264 picture parameter buffer from cached SPS/PPS plus
+/// the parsed slice header for the current frame.
 fn build_pic_param(
-    parsed: &bs_h264::H264IdrParse<'_>,
+    sps: &bs_h264::H264Sps,
+    pps: &bs_h264::H264Pps,
+    sh: &bs_h264::H264SliceHeader,
     target_surface: sys::VASurfaceID,
 ) -> VAPictureParameterBufferH264 {
-    let sps = &parsed.sps;
-    let pps = &parsed.pps;
-    let sh = &parsed.slice_header;
 
     // CurrPic — the surface the GPU will write into.
     let curr_pic = VAPictureH264 {
@@ -542,15 +576,22 @@ fn build_pic_param(
     }
 }
 
-/// Build the H.264 slice parameter buffer from a parsed IDR slice.
+/// Build the H.264 slice parameter buffer from cached PPS + parsed
+/// slice header.
+///
+/// `nal_unit_type` is currently unused (an IDR I-slice has no inter
+/// references and the ref-pic lists are filled with invalid sentinels
+/// regardless), but it's threaded through for future support of
+/// non-IDR slices.
 fn build_slice_param(
-    parsed: &bs_h264::H264IdrParse<'_>,
+    pps: &bs_h264::H264Pps,
+    sh: &bs_h264::H264SliceHeader,
+    nal_unit_type: u8,
     slice_data_size: u32,
     slice_data_offset: u32,
     slice_data_bit_offset: u16,
 ) -> VASliceParameterBufferH264 {
-    let sh = &parsed.slice_header;
-    let pps = &parsed.pps;
+    let _ = nal_unit_type;
 
     // For an I-slice all ref pic list entries are unused.
     let invalid_pic = VAPictureH264 {
@@ -600,7 +641,7 @@ fn build_slice_param(
 }
 
 /// Compute `slice_data_bit_offset` in bits — number of bits in the
-/// IDR NAL covering NAL header byte (8) + slice_header(), with
+/// slice NAL covering NAL header byte (8) + slice_header(), with
 /// emulation-prevention bytes already stripped (per va.h doc string).
 ///
 /// We re-walk the slice header from RBSP bytes, tracking
@@ -610,28 +651,27 @@ fn build_slice_param(
 /// extend it here to cover an IDR I-slice with no FMO and the
 /// CAVLC/CABAC trailing fields up to slice_data().
 fn compute_slice_data_bit_offset(
-    parsed: &bs_h264::H264IdrParse<'_>,
+    sps: &bs_h264::H264Sps,
+    pps: &bs_h264::H264Pps,
     nal_unit_type: u8,
+    access_unit: &[u8],
 ) -> Result<u16, VaError> {
     use oxideav_bitstream::bit_reader::BitReader;
 
-    // Locate the IDR NAL body inside the access unit slab and strip
+    // Locate the slice NAL body inside the access unit slab and strip
     // emulation-prevention bytes. The access unit slab starts with
     // the start code, then the NAL header byte, then the EBSP.
-    let access_unit = parsed.idr_access_unit;
     let sc = start_code_len(access_unit);
     if access_unit.len() <= sc {
         return Err(VaError::Va {
             status: 0,
-            message: "slice_data_bit_offset: empty IDR NAL".into(),
+            message: "slice_data_bit_offset: empty slice NAL".into(),
         });
     }
     let nal_header_byte = access_unit[sc];
     let ebsp = &access_unit[sc + 1..];
     let rbsp = bs_h264::ebsp_to_rbsp(ebsp);
 
-    let sps = &parsed.sps;
-    let pps = &parsed.pps;
     let mut r = BitReader::new(&rbsp);
 
     // 7.3.3 slice_header() — re-parse for bit-counting purposes.
@@ -841,13 +881,25 @@ mod registry_impl {
     /// Streaming H.264 decoder for the codec registry.
     ///
     /// Owns its own [`Display`] handle (opened from
-    /// `/dev/dri/renderD128`), and lazily constructs the
-    /// [`H264VaDecoder`] on the first packet that contains an SPS.
-    /// Each call to `send_packet` decodes the packet's IDR access unit
-    /// (if any) and stashes the resulting [`Frame`] for the next
-    /// `receive_frame`.
+    /// `/dev/dri/renderD128`), caches SPS / PPS as they arrive in the
+    /// packet stream (so a slice-only packet that follows a packet
+    /// containing SPS+PPS still decodes — same statefulness
+    /// `cuvidParser` provides on the NVDEC side), and lazily
+    /// constructs the inner [`H264VaDecoder`] once the first SPS NAL
+    /// has been observed.
     ///
-    /// Scope: this is the same single-IDR shape as
+    /// Each `send_packet` walks the packet's Annex-B NALs:
+    ///
+    /// * `NAL_TYPE_SPS` → parse and cache.
+    /// * `NAL_TYPE_PPS` → parse and cache.
+    /// * `NAL_TYPE_IDR` / `NAL_TYPE_NON_IDR_SLICE` → require both
+    ///   cached SPS and cached PPS, parse the slice header, build
+    ///   parameter buffers from the cached SPS/PPS plus the parsed
+    ///   slice header, and submit. Errors out if no SPS/PPS has been
+    ///   seen yet.
+    /// * Other NAL types (AUD, SEI, etc.) are ignored.
+    ///
+    /// Scope: this is the same single-frame I/IDR shape as
     /// [`H264VaDecoder::decode_idr`] — there is no DPB, no P/B-frame
     /// inter-prediction, no frame reordering. The intent is to land
     /// the cross-validated proof that VA-API decode works on this
@@ -861,8 +913,12 @@ mod registry_impl {
         // immutably from one place (the inner `H264VaDecoder`) so
         // Box::leak avoids the self-referential-struct headache.
         display: &'static Display,
-        // None until the first packet with SPS+PPS+IDR arrives.
+        // None until the first SPS has been observed.
         decoder: Option<H264VaDecoder<'static>>,
+        // Cached parameter sets. Populated as SPS / PPS NALs flow
+        // through `send_packet`; consulted on every slice NAL.
+        cached_sps: Option<bs_h264::H264Sps>,
+        cached_pps: Option<bs_h264::H264Pps>,
         pending: Option<Frame>,
     }
 
@@ -891,8 +947,96 @@ mod registry_impl {
                 codec_id,
                 display,
                 decoder: None,
+                cached_sps: None,
+                cached_pps: None,
                 pending: None,
             })
+        }
+
+        /// Decode one slice NAL, building an Annex-B access-unit slab
+        /// from the NAL bytes (so `decode_slice` sees a 4-byte start
+        /// code at index 0 like it would in a full Annex-B stream).
+        fn decode_one_slice(
+            &mut self,
+            nal: &[u8],
+            nal_unit_type: u8,
+            pts: Option<i64>,
+        ) -> oxideav_core::Result<()> {
+            let sps = self.cached_sps.as_ref().ok_or_else(|| {
+                oxideav_core::Error::other(
+                    "VA-API: no SPS available before slice (stream malformed?)",
+                )
+            })?;
+            let pps = self.cached_pps.as_ref().ok_or_else(|| {
+                oxideav_core::Error::other(
+                    "VA-API: no PPS available before slice (stream malformed?)",
+                )
+            })?;
+
+            // Parse just enough of the slice header to populate the
+            // VA pic/slice parameter buffers.
+            if nal.is_empty() {
+                return Err(oxideav_core::Error::other("VA-API: empty slice NAL"));
+            }
+            let rbsp = bs_h264::ebsp_to_rbsp(&nal[1..]);
+            let slice_header = bs_h264::parse_slice_header_minimal(&rbsp, nal_unit_type, sps, pps)
+                .map_err(|e| {
+                    oxideav_core::Error::other(format!("VA-API: parse slice header: {e}"))
+                })?;
+
+            // Build a fresh Annex-B access-unit slab: 4-byte start
+            // code + the slice NAL (header byte + EBSP) — this is what
+            // `decode_slice` expects.
+            let mut access_unit = Vec::with_capacity(4 + nal.len());
+            access_unit.extend_from_slice(&[0, 0, 0, 1]);
+            access_unit.extend_from_slice(nal);
+
+            // Lazily build the inner decoder now that we have an SPS.
+            if self.decoder.is_none() {
+                let dec = H264VaDecoder::from_sps(self.display, sps).map_err(|e| {
+                    oxideav_core::Error::other(format!("VA-API: H264VaDecoder::from_sps: {e}"))
+                })?;
+                self.decoder = Some(dec);
+            }
+            let dec = self.decoder.as_ref().expect("just constructed");
+
+            let frame = dec
+                .decode_slice(sps, pps, &slice_header, nal_unit_type, &access_unit)
+                .map_err(|e| {
+                    oxideav_core::Error::other(format!("VA-API: decode_slice: {e}"))
+                })?;
+
+            // Convert DecodedFrame (I420) → oxideav_core::VideoFrame.
+            let w = dec.display_width() as usize;
+            let h = dec.display_height() as usize;
+            let cw = w / 2;
+            let ch = h / 2;
+            // Crop to display rectangle so consumers get the
+            // intended-output sub-rectangle.
+            let y = crop_plane(&frame.y, frame.width as usize, frame.height as usize, w, h);
+            let u = crop_plane(
+                &frame.u,
+                (frame.width / 2) as usize,
+                (frame.height / 2) as usize,
+                cw,
+                ch,
+            );
+            let v = crop_plane(
+                &frame.v,
+                (frame.width / 2) as usize,
+                (frame.height / 2) as usize,
+                cw,
+                ch,
+            );
+            self.pending = Some(Frame::Video(VideoFrame {
+                pts,
+                planes: vec![
+                    VideoPlane { stride: w, data: y },
+                    VideoPlane { stride: cw, data: u },
+                    VideoPlane { stride: cw, data: v },
+                ],
+            }));
+            Ok(())
         }
     }
 
@@ -920,52 +1064,40 @@ mod registry_impl {
             if packet.data.is_empty() {
                 return Ok(());
             }
-            // Build the inner decoder lazily — we need the SPS to size
-            // the surface.
-            if self.decoder.is_none() {
-                match H264VaDecoder::new(self.display, &packet.data) {
-                    Ok(d) => self.decoder = Some(d),
-                    Err(e) => {
-                        return Err(oxideav_core::Error::other(format!(
-                            "VA-API: H264VaDecoder::new failed: {e}"
-                        )))
+            // Walk every NAL in the packet's Annex-B byte slab. Each
+            // NAL drives one of three actions: cache (SPS/PPS), decode
+            // (slice), or ignore (everything else).
+            for nal in bs_h264::split_annex_b(&packet.data) {
+                if nal.is_empty() {
+                    continue;
+                }
+                let (_, _, nal_type) = bs_h264::nal_header(nal[0]);
+                match nal_type {
+                    bs_h264::NAL_TYPE_SPS => {
+                        let sps = bs_h264::parse_sps_nal(nal).map_err(|e| {
+                            oxideav_core::Error::other(format!(
+                                "VA-API: parse SPS NAL: {e}"
+                            ))
+                        })?;
+                        self.cached_sps = Some(sps);
+                    }
+                    bs_h264::NAL_TYPE_PPS => {
+                        let pps = bs_h264::parse_pps_nal(nal).map_err(|e| {
+                            oxideav_core::Error::other(format!(
+                                "VA-API: parse PPS NAL: {e}"
+                            ))
+                        })?;
+                        self.cached_pps = Some(pps);
+                    }
+                    bs_h264::NAL_TYPE_IDR | bs_h264::NAL_TYPE_NON_IDR_SLICE => {
+                        self.decode_one_slice(nal, nal_type, packet.pts)?;
+                    }
+                    _ => {
+                        // AUD, SEI, etc. — not relevant for
+                        // single-frame IDR-only decode.
                     }
                 }
             }
-            let dec = self.decoder.as_ref().expect("just constructed");
-            let frame = dec.decode_idr(&packet.data).map_err(|e| {
-                oxideav_core::Error::other(format!("VA-API: decode_idr failed: {e}"))
-            })?;
-            // Convert DecodedFrame (I420) → oxideav_core::VideoFrame.
-            let w = dec.display_width() as usize;
-            let h = dec.display_height() as usize;
-            let cw = w / 2;
-            let ch = h / 2;
-            // Crop to display rectangle so consumers get the
-            // intended-output sub-rectangle.
-            let y = crop_plane(&frame.y, frame.width as usize, frame.height as usize, w, h);
-            let u = crop_plane(
-                &frame.u,
-                (frame.width / 2) as usize,
-                (frame.height / 2) as usize,
-                cw,
-                ch,
-            );
-            let v = crop_plane(
-                &frame.v,
-                (frame.width / 2) as usize,
-                (frame.height / 2) as usize,
-                cw,
-                ch,
-            );
-            self.pending = Some(Frame::Video(VideoFrame {
-                pts: packet.pts,
-                planes: vec![
-                    VideoPlane { stride: w, data: y },
-                    VideoPlane { stride: cw, data: u },
-                    VideoPlane { stride: cw, data: v },
-                ],
-            }));
             Ok(())
         }
 

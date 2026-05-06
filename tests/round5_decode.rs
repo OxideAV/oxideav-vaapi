@@ -321,3 +321,151 @@ fn registry_decoder_roundtrips_idr_packet() {
     assert_eq!(v.planes[1].data.len(), 160 * 120, "U plane size");
     assert_eq!(v.planes[2].data.len(), 160 * 120, "V plane size");
 }
+
+/// Multi-packet streaming test: split the bundled SPS+PPS+IDR fixture
+/// into its three constituent NALs, feed them to the decoder as
+/// separate packets — first SPS, then PPS, then IDR — and verify the
+/// decoder caches SPS/PPS across packets and decodes the IDR slice
+/// when it finally arrives. This is the shape `oxideav bench h264`
+/// produces: NVENC emits one SPS+PPS+IDR access unit followed by
+/// slice-only access units, and the registry decoder has to cache
+/// across packet boundaries to handle them.
+#[cfg(feature = "registry")]
+#[test]
+fn registry_decoder_handles_split_sps_pps_idr_packets() {
+    use oxideav_bitstream::h264 as bs_h264;
+    use oxideav_core::{time::TimeBase, CodecId, Decoder, Frame, Packet};
+    use oxideav_vaapi::H264VaCodecDecoder;
+
+    if !Path::new(RENDER_NODE).exists() {
+        eprintln!("skipping: {RENDER_NODE} not present");
+        return;
+    }
+    let mut dec = match H264VaCodecDecoder::new(CodecId::new("h264")) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("skipping: H264VaCodecDecoder::new failed: {e}");
+            return;
+        }
+    };
+
+    // Walk the fixture's NALs and bucket by type.
+    let mut sps_nal: Option<Vec<u8>> = None;
+    let mut pps_nal: Option<Vec<u8>> = None;
+    let mut idr_nal: Option<Vec<u8>> = None;
+    for nal in bs_h264::split_annex_b(FIXTURE) {
+        if nal.is_empty() {
+            continue;
+        }
+        let (_, _, nal_type) = bs_h264::nal_header(nal[0]);
+        match nal_type {
+            bs_h264::NAL_TYPE_SPS if sps_nal.is_none() => sps_nal = Some(nal.to_vec()),
+            bs_h264::NAL_TYPE_PPS if pps_nal.is_none() => pps_nal = Some(nal.to_vec()),
+            bs_h264::NAL_TYPE_IDR if idr_nal.is_none() => idr_nal = Some(nal.to_vec()),
+            _ => {}
+        }
+    }
+    let sps_nal = sps_nal.expect("fixture contains SPS NAL");
+    let pps_nal = pps_nal.expect("fixture contains PPS NAL");
+    let idr_nal = idr_nal.expect("fixture contains IDR NAL");
+
+    // Wrap each NAL in a fresh Annex-B start code to produce a
+    // standalone packet per NAL.
+    let sps_pkt = {
+        let mut v = Vec::with_capacity(4 + sps_nal.len());
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.extend_from_slice(&sps_nal);
+        Packet::new(0, TimeBase::new(1, 1000), v).with_pts(0)
+    };
+    let pps_pkt = {
+        let mut v = Vec::with_capacity(4 + pps_nal.len());
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.extend_from_slice(&pps_nal);
+        Packet::new(0, TimeBase::new(1, 1000), v).with_pts(0)
+    };
+    let idr_pkt = {
+        let mut v = Vec::with_capacity(4 + idr_nal.len());
+        v.extend_from_slice(&[0, 0, 0, 1]);
+        v.extend_from_slice(&idr_nal);
+        Packet::new(0, TimeBase::new(1, 1000), v).with_pts(33)
+    };
+
+    // Feed the SPS-only packet — no frame yet, decoder caches the SPS.
+    dec.send_packet(&sps_pkt).expect("send_packet sps");
+    assert!(
+        matches!(
+            dec.receive_frame(),
+            Err(oxideav_core::Error::NeedMore)
+        ),
+        "no frame should be available after SPS-only packet"
+    );
+
+    // Same for PPS-only.
+    dec.send_packet(&pps_pkt).expect("send_packet pps");
+    assert!(
+        matches!(
+            dec.receive_frame(),
+            Err(oxideav_core::Error::NeedMore)
+        ),
+        "no frame should be available after PPS-only packet"
+    );
+
+    // Now the IDR-only packet — must produce a frame from the cached
+    // SPS+PPS.
+    dec.send_packet(&idr_pkt).expect("send_packet idr");
+    let frame = dec.receive_frame().expect("receive_frame after IDR");
+    let Frame::Video(v) = frame else {
+        panic!("expected VideoFrame, got {frame:?}");
+    };
+    assert_eq!(v.planes.len(), 3, "expected I420 (3 planes)");
+    assert_eq!(v.planes[0].stride, 320, "Y stride should match display width");
+    assert_eq!(v.planes[0].data.len(), 320 * 240, "Y plane size");
+    assert_eq!(v.pts, Some(33), "frame pts should be carried from the slice packet");
+}
+
+/// Slice-without-SPS guard: feeding an IDR packet to a fresh decoder
+/// before any SPS/PPS has been seen must fail explicitly (rather than
+/// silently producing garbage or panicking on a missing cache entry).
+#[cfg(feature = "registry")]
+#[test]
+fn registry_decoder_errors_on_slice_without_sps() {
+    use oxideav_bitstream::h264 as bs_h264;
+    use oxideav_core::{time::TimeBase, CodecId, Decoder, Packet};
+    use oxideav_vaapi::H264VaCodecDecoder;
+
+    if !Path::new(RENDER_NODE).exists() {
+        eprintln!("skipping: {RENDER_NODE} not present");
+        return;
+    }
+    let mut dec = match H264VaCodecDecoder::new(CodecId::new("h264")) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("skipping: H264VaCodecDecoder::new failed: {e}");
+            return;
+        }
+    };
+
+    // Find the IDR NAL in the fixture.
+    let mut idr_nal: Option<Vec<u8>> = None;
+    for nal in bs_h264::split_annex_b(FIXTURE) {
+        if nal.is_empty() {
+            continue;
+        }
+        let (_, _, nal_type) = bs_h264::nal_header(nal[0]);
+        if nal_type == bs_h264::NAL_TYPE_IDR {
+            idr_nal = Some(nal.to_vec());
+            break;
+        }
+    }
+    let idr_nal = idr_nal.expect("fixture contains IDR NAL");
+    let mut data = Vec::with_capacity(4 + idr_nal.len());
+    data.extend_from_slice(&[0, 0, 0, 1]);
+    data.extend_from_slice(&idr_nal);
+    let pkt = Packet::new(0, TimeBase::new(1, 1000), data).with_pts(0);
+
+    let res = dec.send_packet(&pkt);
+    assert!(
+        res.is_err(),
+        "send_packet on an IDR before any SPS/PPS should fail"
+    );
+}
