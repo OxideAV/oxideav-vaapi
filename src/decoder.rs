@@ -930,16 +930,37 @@ mod registry_impl {
     unsafe impl Send for H264VaCodecDecoder {}
 
     impl H264VaCodecDecoder {
-        const RENDER_NODE: &'static str = "/dev/dri/renderD128";
-
+        /// Construct a decoder bound to the first working VA-API
+        /// device (i.e. `device_index = 0`). Equivalent to
+        /// [`Self::new_with_device_index(codec_id, 0)`].
         pub fn new(codec_id: CodecId) -> oxideav_core::Result<Self> {
-            let dpy = Display::open_drm(std::path::Path::new(Self::RENDER_NODE)).map_err(
-                |e| {
-                    oxideav_core::Error::unsupported(format!(
-                        "VA-API: open DRM render node failed: {e}"
-                    ))
-                },
-            )?;
+            Self::new_with_device_index(codec_id, 0)
+        }
+
+        /// Construct a decoder bound to the `device_index`-th working
+        /// VA-API render node, in the same enumeration order
+        /// [`crate::engine::engine_info`] reports. Used by the registry
+        /// factory to honour [`CodecParameters::device_index`].
+        ///
+        /// Returns [`oxideav_core::Error::Unsupported`] when:
+        ///
+        /// * `device_index` exceeds the number of working devices
+        ///   discovered by walking `/dev/dri/renderD128..renderD191`,
+        /// * the matching render-node opens but `vaInitialize` fails
+        ///   (race against `engine_info` — extremely unlikely but
+        ///   surfaced cleanly).
+        pub fn new_with_device_index(
+            codec_id: CodecId,
+            device_index: u32,
+        ) -> oxideav_core::Result<Self> {
+            let path = crate::engine::device_path_for_index(device_index).map_err(|e| {
+                oxideav_core::Error::unsupported(format!("VA-API: {e}"))
+            })?;
+            let dpy = Display::open_drm(&path).map_err(|e| {
+                oxideav_core::Error::unsupported(format!(
+                    "VA-API: open DRM render node {path:?} failed: {e}"
+                ))
+            })?;
             // Heap-pin the display so the &'static borrow inside
             // `decoder` is sound. Dropped manually in `Drop`.
             let display: &'static mut Display = Box::leak(Box::new(dpy));
@@ -1125,10 +1146,21 @@ mod registry_impl {
 
     /// Decoder factory used by [`crate::register`] to wire H.264 High
     /// VA-API decode into the codec registry at priority 10.
+    ///
+    /// Honours [`CodecParameters::device_index`]: `None` opens the
+    /// first working VA-API device (the historical default), `Some(n)`
+    /// opens the `n`-th working device using the same enumeration
+    /// order [`crate::engine::engine_info`] reports — so the
+    /// device-block index in `oxideav info <codec>` lines up with the
+    /// value the caller passes via `with_device_index`.
     pub fn h264_decoder_factory(
         params: &CodecParameters,
     ) -> oxideav_core::Result<Box<dyn Decoder>> {
-        Ok(Box::new(H264VaCodecDecoder::new(params.codec_id.clone())?))
+        let device_index = params.device_index.unwrap_or(0);
+        Ok(Box::new(H264VaCodecDecoder::new_with_device_index(
+            params.codec_id.clone(),
+            device_index,
+        )?))
     }
 }
 

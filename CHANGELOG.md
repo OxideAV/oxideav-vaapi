@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 7 (`CodecParameters::device_index` plumbing)
+
+`H264VaCodecDecoder::make` (the registered factory) now honours
+[`oxideav_core::CodecParameters::device_index`]. Indexing matches
+[`engine::engine_info`]'s walk order so `info h264` device-block
+indices and `--device` selectors line up — passing
+`with_device_index(1)` opens the second device that
+`engine_info()` reports, not just "the second `renderD*` node on
+disk" (which may not be the same thing on hosts where libva
+refuses to bind to one of the nodes).
+
+- New `pub fn engine::device_path_for_index(index: u32) -> Result<PathBuf, VaError>`
+  (also re-exported from the crate root). Walks
+  `/dev/dri/renderD128..renderD191`, attempts
+  [`Display::open_drm`] on each existing path, counts only those
+  that initialise cleanly, and returns the path at position
+  `index` in that filtered list. Errors with a descriptive
+  [`VaError::Init`] when `index` is out of range.
+- New `H264VaCodecDecoder::new_with_device_index(codec_id, index)`
+  constructor; the existing
+  [`H264VaCodecDecoder::new(codec_id)`] now delegates to it with
+  `index = 0` for source-compatibility.
+- Decoder factory `decoder::h264_decoder_factory` reads
+  `params.device_index.unwrap_or(0)` and threads the index
+  through. Out-of-range values return
+  [`oxideav_core::Error::Unsupported`] rather than silently
+  falling back to device 0 — silent fallback would mask
+  configuration mistakes.
+- New `tests/round7_device_index.rs` (3 tests):
+  - `device_index_none_opens_first_working_device` — default
+    `CodecParameters` has `device_index = None`; the factory
+    accepts it and `device_path_for_index(0)` matches the
+    `dri_node` extra entry on `engine_info()[0]`.
+  - `device_index_one_opens_second_device` — skips when
+    `engine_info()` reports fewer than 2 working devices; on
+    multi-device hosts (the dev box now: NVIDIA renderD128 +
+    Intel iHD renderD129) confirms the second-position
+    device_index resolves to the second device's path and the
+    factory builds successfully.
+  - `device_index_out_of_range_errors` — runs everywhere;
+    `device_index = 99` errors at both the helper and the
+    factory layer. Always-on so CI hosts without a working
+    VA-API stack still cover the negative path.
+
 ### Added — Round 6 (engine probe — DRI render-node enumeration + per-codec caps)
 
 Wires up Phase 1's [`oxideav_core::engine::EngineProbeFn`] contract so

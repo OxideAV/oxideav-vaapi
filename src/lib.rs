@@ -64,7 +64,7 @@ pub use decoder::{DecodedFrame, H264VaDecoder};
 pub use decoder::H264VaCodecDecoder;
 pub use display::{Display, VaError, VaProfile};
 #[cfg(feature = "registry")]
-pub use engine::engine_info;
+pub use engine::{device_path_for_index, engine_info};
 
 /// Confirm the VA-API framework loads and (Round 5) register the
 /// hardware H.264 decoder factory at priority 10.

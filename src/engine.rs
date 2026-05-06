@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use oxideav_core::engine::{HwCodecCaps, HwDeviceInfo};
 
 use crate::config;
-use crate::display::{Display, VaProfile};
+use crate::display::{Display, VaError, VaProfile};
 use crate::sys::{attrib, entrypoint, profile};
 
 /// Range of DRM render-node minors we attempt to probe. Linux assigns
@@ -80,6 +80,63 @@ pub fn engine_info() -> Vec<HwDeviceInfo> {
         }
     }
     out
+}
+
+/// Resolve a 0-based [`oxideav_core::CodecParameters::device_index`]
+/// to the DRM render-node path the decoder factory should open.
+///
+/// Walks `/dev/dri/renderD128`..`renderD191` in order, attempts
+/// [`Display::open_drm`] on each existing path, and returns the
+/// `index`-th path that opened cleanly. The walk and filter logic
+/// mirrors [`engine_info`] exactly so consumers can correlate the
+/// device-block indices printed by `info <codec>` with the value
+/// they pass via `with_device_index`.
+///
+/// Failure modes:
+///
+/// * `index >= number of working devices` →
+///   [`VaError::Init`] with a status of `0` and a descriptive
+///   `message` (the closest fit in the existing error taxonomy —
+///   the alternative would require a new variant for "no such
+///   device" and that buys nothing for callers).
+///
+/// O(N) per construction where N is the number of working render
+/// nodes (typically 1-3 on real hosts). No caching: the renderD*
+/// node set is stable across a process lifetime in practice but
+/// rebuilding lets the function stay side-effect free, matching
+/// [`engine_info`]'s contract.
+pub fn device_path_for_index(index: u32) -> Result<PathBuf, VaError> {
+    let mut working = 0u32;
+    let mut total_existing = 0u32;
+    for minor in RENDER_MINOR_FIRST..=RENDER_MINOR_LAST {
+        let path = PathBuf::from(format!("/dev/dri/renderD{minor}"));
+        if !path.exists() {
+            continue;
+        }
+        total_existing += 1;
+        // Try to init libva on this node — if it works, count it.
+        // The Display is dropped immediately so we don't hold the
+        // VADisplay open across the walk.
+        match Display::open_drm(&path) {
+            Ok(_dpy) => {
+                if working == index {
+                    return Ok(path);
+                }
+                working += 1;
+            }
+            Err(_) => {
+                // Skip nodes whose libva driver doesn't bind — same
+                // policy as `engine_info`.
+            }
+        }
+    }
+    Err(VaError::Init {
+        status: 0,
+        message: format!(
+            "device_index {index} out of range: only {working} working VA-API \
+             device(s) on this host ({total_existing} render node(s) probed)"
+        ),
+    })
 }
 
 /// Open a single render node, build its [`HwDeviceInfo`], and return
