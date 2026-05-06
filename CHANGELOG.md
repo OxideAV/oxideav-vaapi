@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.1...v0.0.2) - 2026-05-06
+
+### Other
+
+- dlopen_succeeds + va_get_display_drm_returns_non_null skip on no-libva CI
+- apply rustfmt layout + fix always-zero op + identical-if-block lints
+- skip frameworks_load + vtable_resolves on hosts without the driver
+- honour CodecParameters::device_index — pick matching DRI render node
+- cache SPS/PPS across packets — works under bench's slice-only feed
+- query vaGetConfigAttributes per device for max width/height
+- implement engine_info() — enumerate DRI render nodes + per-codec caps
+
 ### Added — Round 7 (`CodecParameters::device_index` plumbing)
 
 `H264VaCodecDecoder::make` (the registered factory) now honours
