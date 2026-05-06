@@ -121,8 +121,11 @@ pub mod attrib {
     pub const VAConfigAttribDecSliceMode: i32 = 6;
     pub const VAConfigAttribDecJPEG: i32 = 7;
     pub const VAConfigAttribDecProcessing: i32 = 8;
-    pub const VAConfigAttribMaxPictureWidth: i32 = 9;
-    pub const VAConfigAttribMaxPictureHeight: i32 = 10;
+    // The dec/enc attributes 9..17 are interleaved; only the values
+    // we actually consult are listed here. Verbatim from va.h
+    // (VAConfigAttribType enum).
+    pub const VAConfigAttribMaxPictureWidth: i32 = 18;
+    pub const VAConfigAttribMaxPictureHeight: i32 = 19;
 }
 
 /// `VAConfigAttrib { type, value }` — the in/out struct used by

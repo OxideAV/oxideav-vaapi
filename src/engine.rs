@@ -227,16 +227,16 @@ fn collect_codecs(dpy: &Display) -> Vec<HwCodecCaps> {
             }
         }
 
-        // Query MaxPictureWidth / MaxPictureHeight on the highest
-        // present profile that the driver actually advertises VLD
-        // for; if the family is encode-only (rare), fall back to
-        // EncSlice. If neither is advertised we drop the dims
-        // entirely — a profile with no entrypoint isn't queryable.
-        let (max_width, max_height) = present
-            .iter()
-            .rev()
-            .find_map(|p| pick_dims(dpy, *p, decode, encode))
-            .unwrap_or((None, None));
+        // Query MaxPictureWidth / MaxPictureHeight across every
+        // (profile, entrypoint) pair the driver advertises in this
+        // family, and surface the maximum reported value. Walking the
+        // whole matrix (rather than just the highest decode profile)
+        // is important because some drivers report 0/`VA_ATTRIB_NOT_SUPPORTED`
+        // for one entrypoint but real numbers for the other — Intel
+        // iHD on H.264, for example, reports the limit on EncSliceLP
+        // even when the matching VLD pair returns the same value;
+        // taking the max across both is correct.
+        let (max_width, max_height) = max_dims_across(dpy, &present);
 
         let profiles = present.iter().map(|p| p.name()).collect::<Vec<_>>();
 
@@ -254,51 +254,62 @@ fn collect_codecs(dpy: &Display) -> Vec<HwCodecCaps> {
     out
 }
 
-/// Try to read `MaxPictureWidth` / `MaxPictureHeight` for `profile`
-/// on the most informative entrypoint advertised for it. Returns
-/// `Some((width, height))` on a successful query (either field may
-/// itself be `None` if the driver returns `VA_ATTRIB_NOT_SUPPORTED`),
-/// or `None` if no entrypoint is available.
-fn pick_dims(
-    dpy: &Display,
-    profile: VaProfile,
-    family_decode: bool,
-    family_encode: bool,
-) -> Option<(Option<u32>, Option<u32>)> {
-    // Pick the entrypoint we can actually ask about for this profile.
-    let ep = if family_decode && dpy.is_supported(profile, entrypoint::VAEntrypointVLD) {
-        entrypoint::VAEntrypointVLD
-    } else if family_encode && dpy.is_supported(profile, entrypoint::VAEntrypointEncSlice) {
-        entrypoint::VAEntrypointEncSlice
-    } else if family_encode && dpy.is_supported(profile, entrypoint::VAEntrypointEncSliceLP) {
-        entrypoint::VAEntrypointEncSliceLP
-    } else {
-        return None;
-    };
+/// Walk every `(profile, entrypoint)` pair advertised for this codec
+/// family and return the maximum reported `MaxPictureWidth` /
+/// `MaxPictureHeight` across all of them.
+///
+/// The libva spec says `vaGetConfigAttributes` returns
+/// `VA_ATTRIB_NOT_SUPPORTED = 0x80000000` for attributes the driver
+/// doesn't implement; in practice some drivers (notably
+/// `nvidia-vaapi-driver` 0.0.16) write `0` instead. We treat both as
+/// "unknown" — the value is only contributed to the returned max if
+/// it's strictly positive.
+///
+/// Returns `(None, None)` if no entrypoint reports a real number for
+/// either dimension.
+fn max_dims_across(dpy: &Display, profiles: &[VaProfile]) -> (Option<u32>, Option<u32>) {
+    const ENTRYPOINTS: &[i32] = &[
+        entrypoint::VAEntrypointVLD,
+        entrypoint::VAEntrypointEncSlice,
+        entrypoint::VAEntrypointEncSliceLP,
+    ];
 
-    // A driver that doesn't honour MaxPictureWidth often answers
-    // `0` rather than `VA_ATTRIB_NOT_SUPPORTED` (this is observed on
-    // `nvidia-vaapi-driver 0.0.16`, which advertises every profile
-    // but doesn't surface a max-dim figure). Treat both as "unknown"
-    // so the consumer gets `None` instead of a misleading `Some(0)`.
-    let w = config::get_attribute(
-        dpy.raw(),
-        profile.raw(),
-        ep,
-        attrib::VAConfigAttribMaxPictureWidth,
-    )
-    .ok()
-    .flatten()
-    .filter(|v| *v != 0);
-    let h = config::get_attribute(
-        dpy.raw(),
-        profile.raw(),
-        ep,
-        attrib::VAConfigAttribMaxPictureHeight,
-    )
-    .ok()
-    .flatten()
-    .filter(|v| *v != 0);
-    Some((w, h))
+    let mut max_w: Option<u32> = None;
+    let mut max_h: Option<u32> = None;
+
+    for p in profiles {
+        for ep in ENTRYPOINTS {
+            if !dpy.is_supported(*p, *ep) {
+                continue;
+            }
+            // Driver advertises this `(profile, entrypoint)` pair —
+            // ask for both width and height. Errors are silenced
+            // because libva can return UNSUPPORTED on a profile that
+            // is technically advertised but won't compile a config;
+            // the caller wants the best available answer, not an error.
+            if let Ok(Some(v)) = config::get_attribute(
+                dpy.raw(),
+                p.raw(),
+                *ep,
+                attrib::VAConfigAttribMaxPictureWidth,
+            ) {
+                if v != 0 {
+                    max_w = Some(max_w.map_or(v, |cur| cur.max(v)));
+                }
+            }
+            if let Ok(Some(v)) = config::get_attribute(
+                dpy.raw(),
+                p.raw(),
+                *ep,
+                attrib::VAConfigAttribMaxPictureHeight,
+            ) {
+                if v != 0 {
+                    max_h = Some(max_h.map_or(v, |cur| cur.max(v)));
+                }
+            }
+        }
+    }
+
+    (max_w, max_h)
 }
 
