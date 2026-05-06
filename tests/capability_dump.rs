@@ -120,7 +120,10 @@ fn capability_dump() {
         );
     }
 
-    eprintln!("\nsummary: {} decode profile(s), {} encode profile(s)", decode_count, encode_count);
+    eprintln!(
+        "\nsummary: {} decode profile(s), {} encode profile(s)",
+        decode_count, encode_count
+    );
     if encode_count == 0 && vendor.contains("NVDEC") {
         eprintln!(
             "(NVDEC backend confirmed: VA-API encode is structurally \

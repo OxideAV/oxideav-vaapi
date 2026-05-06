@@ -30,7 +30,10 @@ fn device_index_none_opens_first_working_device() {
     }
     // device_index defaults to None on a fresh CodecParameters.
     let params = CodecParameters::video(CodecId::new("h264"));
-    assert!(params.device_index.is_none(), "device_index defaults to None");
+    assert!(
+        params.device_index.is_none(),
+        "device_index defaults to None"
+    );
     assert_eq!(params.media_type, MediaType::Video);
 
     // None → factory must accept (treated as 0). Calling the factory

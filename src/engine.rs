@@ -210,10 +210,7 @@ const CODEC_FAMILIES: &[CodecFamily] = &[
     },
     CodecFamily {
         codec: "av1",
-        profiles: &[
-            profile::VAProfileAV1Profile0,
-            profile::VAProfileAV1Profile1,
-        ],
+        profiles: &[profile::VAProfileAV1Profile0, profile::VAProfileAV1Profile1],
     },
     CodecFamily {
         codec: "vp8",
@@ -221,17 +218,11 @@ const CODEC_FAMILIES: &[CodecFamily] = &[
     },
     CodecFamily {
         codec: "vp9",
-        profiles: &[
-            profile::VAProfileVP9Profile0,
-            profile::VAProfileVP9Profile2,
-        ],
+        profiles: &[profile::VAProfileVP9Profile0, profile::VAProfileVP9Profile2],
     },
     CodecFamily {
         codec: "mpeg2",
-        profiles: &[
-            profile::VAProfileMPEG2Simple,
-            profile::VAProfileMPEG2Main,
-        ],
+        profiles: &[profile::VAProfileMPEG2Simple, profile::VAProfileMPEG2Main],
     },
     CodecFamily {
         codec: "vc1",
@@ -369,4 +360,3 @@ fn max_dims_across(dpy: &Display, profiles: &[VaProfile]) -> (Option<u32>, Optio
 
     (max_w, max_h)
 }
-

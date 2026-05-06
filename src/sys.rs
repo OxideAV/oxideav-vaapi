@@ -429,8 +429,7 @@ pub type FnVaRenderPicture = unsafe extern "C" fn(
     num_buffers: i32,
 ) -> VAStatus;
 
-pub type FnVaEndPicture =
-    unsafe extern "C" fn(dpy: VADisplay, context: VAContextID) -> VAStatus;
+pub type FnVaEndPicture = unsafe extern "C" fn(dpy: VADisplay, context: VAContextID) -> VAStatus;
 
 pub type FnVaCreateBuffer = unsafe extern "C" fn(
     dpy: VADisplay,
@@ -469,23 +468,15 @@ pub type FnVaSyncSurface =
 pub type FnVaDestroyBuffer =
     unsafe extern "C" fn(dpy: VADisplay, buffer_id: VABufferID) -> VAStatus;
 
-pub type FnVaMapBuffer = unsafe extern "C" fn(
-    dpy: VADisplay,
-    buf_id: VABufferID,
-    pbuf: *mut *mut c_void,
-) -> VAStatus;
+pub type FnVaMapBuffer =
+    unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID, pbuf: *mut *mut c_void) -> VAStatus;
 
-pub type FnVaUnmapBuffer =
-    unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
+pub type FnVaUnmapBuffer = unsafe extern "C" fn(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
 
-pub type FnVaDeriveImage = unsafe extern "C" fn(
-    dpy: VADisplay,
-    surface: VASurfaceID,
-    image: *mut VAImage,
-) -> VAStatus;
+pub type FnVaDeriveImage =
+    unsafe extern "C" fn(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
 
-pub type FnVaDestroyImage =
-    unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
+pub type FnVaDestroyImage = unsafe extern "C" fn(dpy: VADisplay, image: VAImageID) -> VAStatus;
 
 pub type FnVaGetImage = unsafe extern "C" fn(
     dpy: VADisplay,
@@ -631,17 +622,9 @@ fn load_vtable() -> Result<Vtable, String> {
         va_initialize: sym!(libva, "vaInitialize", FnVaInitialize),
         va_terminate: sym!(libva, "vaTerminate", FnVaTerminate),
         va_error_str: sym!(libva, "vaErrorStr", FnVaErrorStr),
-        va_query_vendor_string: sym!(
-            libva,
-            "vaQueryVendorString",
-            FnVaQueryVendorString
-        ),
+        va_query_vendor_string: sym!(libva, "vaQueryVendorString", FnVaQueryVendorString),
         va_max_num_profiles: sym!(libva, "vaMaxNumProfiles", FnVaMaxNumProfiles),
-        va_query_config_profiles: sym!(
-            libva,
-            "vaQueryConfigProfiles",
-            FnVaQueryConfigProfiles
-        ),
+        va_query_config_profiles: sym!(libva, "vaQueryConfigProfiles", FnVaQueryConfigProfiles),
         va_create_config: sym!(libva, "vaCreateConfig", FnVaCreateConfig),
         va_create_context: sym!(libva, "vaCreateContext", FnVaCreateContext),
         va_create_surfaces: sym!(libva, "vaCreateSurfaces", FnVaCreateSurfaces),
@@ -655,11 +638,7 @@ fn load_vtable() -> Result<Vtable, String> {
             "vaQueryConfigEntrypoints",
             FnVaQueryConfigEntrypoints
         ),
-        va_get_config_attributes: sym!(
-            libva,
-            "vaGetConfigAttributes",
-            FnVaGetConfigAttributes
-        ),
+        va_get_config_attributes: sym!(libva, "vaGetConfigAttributes", FnVaGetConfigAttributes),
         va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
         va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
         va_sync_surface: sym!(libva, "vaSyncSurface", FnVaSyncSurface),
@@ -671,16 +650,8 @@ fn load_vtable() -> Result<Vtable, String> {
         va_get_image: sym!(libva, "vaGetImage", FnVaGetImage),
         va_put_image: sym!(libva, "vaPutImage", FnVaPutImage),
         va_create_image: sym!(libva, "vaCreateImage", FnVaCreateImage),
-        va_query_image_formats: sym!(
-            libva,
-            "vaQueryImageFormats",
-            FnVaQueryImageFormats
-        ),
-        va_max_num_image_formats: sym!(
-            libva,
-            "vaMaxNumImageFormats",
-            FnVaMaxNumImageFormats
-        ),
+        va_query_image_formats: sym!(libva, "vaQueryImageFormats", FnVaQueryImageFormats),
+        va_max_num_image_formats: sym!(libva, "vaMaxNumImageFormats", FnVaMaxNumImageFormats),
         va_get_display_drm: sym!(libva_drm, "vaGetDisplayDRM", FnVaGetDisplayDRM),
         _va: libva,
         _va_drm: libva_drm,

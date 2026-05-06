@@ -149,10 +149,7 @@ fn va_initialize_propagates_error_when_no_driver_installed() {
         Err(VaError::Init { status, message }) => {
             // Graceful-failure path — the case exercised on this
             // dev box.
-            assert_ne!(
-                status, 0,
-                "VaError::Init must carry a non-success status"
-            );
+            assert_ne!(status, 0, "VaError::Init must carry a non-success status");
             assert!(
                 !message.trim().is_empty(),
                 "VaError::Init must carry a non-empty driver-supplied message; got '{message}'"
@@ -162,9 +159,7 @@ fn va_initialize_propagates_error_when_no_driver_installed() {
             );
         }
         Err(other) => {
-            panic!(
-                "expected Ok or Err(VaError::Init {{ .. }}); got Err({other:?})"
-            );
+            panic!("expected Ok or Err(VaError::Init {{ .. }}); got Err({other:?})");
         }
     }
 

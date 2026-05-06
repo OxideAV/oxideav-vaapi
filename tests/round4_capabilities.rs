@@ -50,9 +50,7 @@ fn open_display_or_skip() -> Option<Display> {
             );
             None
         }
-        Err(other) => panic!(
-            "Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"
-        ),
+        Err(other) => panic!("Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"),
     }
 }
 

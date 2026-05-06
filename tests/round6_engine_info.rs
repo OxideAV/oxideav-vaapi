@@ -76,6 +76,12 @@ fn engine_info_reports_max_dims_for_intel_h264() {
     // Sanity bounds — Intel Gen Graphics typically reports 4096-8192
     // for h264. Reject zero (sentinel for "not implemented") and any
     // absurd value.
-    assert!(w >= 1024 && w <= 16384, "max_width={w} outside sane range");
-    assert!(h >= 1024 && h <= 16384, "max_height={h} outside sane range");
+    assert!(
+        (1024..=16384).contains(&w),
+        "max_width={w} outside sane range"
+    );
+    assert!(
+        (1024..=16384).contains(&h),
+        "max_height={h} outside sane range"
+    );
 }

@@ -22,9 +22,7 @@
 
 use std::path::Path;
 
-use oxideav_vaapi::sys::{
-    attrib, entrypoint, profile, VA_RT_FORMAT_YUV420,
-};
+use oxideav_vaapi::sys::{attrib, entrypoint, profile, VA_RT_FORMAT_YUV420};
 use oxideav_vaapi::{config, Config, Context, Display, VaError};
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
@@ -43,9 +41,7 @@ fn open_display_or_skip() -> Option<Display> {
             );
             None
         }
-        Err(other) => panic!(
-            "Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"
-        ),
+        Err(other) => panic!("Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"),
     }
 }
 

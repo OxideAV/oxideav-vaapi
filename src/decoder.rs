@@ -266,7 +266,12 @@ impl<'d> H264VaDecoder<'d> {
         }
 
         // vaRenderPicture: submit the four buffers in a single call.
-        let mut buffers = [pic_param_buf, iq_matrix_buf, slice_param_buf, slice_data_buf];
+        let mut buffers = [
+            pic_param_buf,
+            iq_matrix_buf,
+            slice_param_buf,
+            slice_data_buf,
+        ];
         let status = unsafe {
             (vt.va_render_picture)(
                 self.dpy_raw,
@@ -426,8 +431,7 @@ fn create_buffer(
     let mut id: VABufferID = 0;
     // SAFETY: dpy/ctx valid; data points to a `size`-byte allocation
     // owned by the caller.
-    let status =
-        unsafe { (vt.va_create_buffer)(dpy, ctx, buf_type, size, 1, data, &mut id) };
+    let status = unsafe { (vt.va_create_buffer)(dpy, ctx, buf_type, size, 1, data, &mut id) };
     if status != VA_STATUS_SUCCESS {
         return Err(VaError::Va {
             status,
@@ -476,12 +480,11 @@ fn build_pic_param(
     sh: &bs_h264::H264SliceHeader,
     target_surface: sys::VASurfaceID,
 ) -> VAPictureParameterBufferH264 {
-
     // CurrPic — the surface the GPU will write into.
     let curr_pic = VAPictureH264 {
         picture_id: target_surface,
         frame_idx: sh.frame_num,
-        flags: VA_PICTURE_H264_INVALID & 0, // cleared — frame is valid
+        flags: 0, // cleared — frame is valid (no VA_PICTURE_H264_* flags set)
         // For an IDR with pic_order_cnt_type==0 and idr_pic_id=0,
         // the POC is 0/0 (8.2.1).
         top_field_order_cnt: 0,
@@ -738,10 +741,12 @@ fn compute_slice_data_bit_offset(
                 if m == 3 {
                     break;
                 }
-                if m == 0 || m == 1 {
-                    let _abs_diff_pic_num_minus1 = r.ue()?;
-                } else if m == 2 {
-                    let _long_term_pic_num = r.ue()?;
+                // modification_of_pic_nums_idc == 0 or 1 → abs_diff_pic_num_minus1 ue(v)
+                // modification_of_pic_nums_idc == 2     → long_term_pic_num       ue(v)
+                // Both branches read exactly one ue(v) value — only the
+                // semantic interpretation differs (we discard either way).
+                if m <= 2 {
+                    let _value = r.ue()?;
                 } else {
                     return Err(VaError::Va {
                         status: 0,
@@ -759,10 +764,11 @@ fn compute_slice_data_bit_offset(
                 if m == 3 {
                     break;
                 }
-                if m == 0 || m == 1 {
-                    let _abs = r.ue()?;
-                } else if m == 2 {
-                    let _ltpn = r.ue()?;
+                // Same structure as the L0 list above: idc 0/1 reads
+                // abs_diff_pic_num_minus1, idc 2 reads long_term_pic_num,
+                // both as a single ue(v) we discard.
+                if m <= 2 {
+                    let _value = r.ue()?;
                 } else {
                     return Err(VaError::Va {
                         status: 0,
@@ -773,9 +779,7 @@ fn compute_slice_data_bit_offset(
         }
     }
     // pred_weight_table() — only emitted for weighted P/SP or B slices.
-    if (pps.weighted_pred_flag && (is_p || is_sp))
-        || (pps.weighted_bipred_idc == 1 && is_b)
-    {
+    if (pps.weighted_pred_flag && (is_p || is_sp)) || (pps.weighted_bipred_idc == 1 && is_b) {
         return Err(VaError::Va {
             status: 0,
             message: "compute_slice_data_bit_offset: pred_weight_table not implemented (fixture should not need it)".into(),
@@ -953,9 +957,8 @@ mod registry_impl {
             codec_id: CodecId,
             device_index: u32,
         ) -> oxideav_core::Result<Self> {
-            let path = crate::engine::device_path_for_index(device_index).map_err(|e| {
-                oxideav_core::Error::unsupported(format!("VA-API: {e}"))
-            })?;
+            let path = crate::engine::device_path_for_index(device_index)
+                .map_err(|e| oxideav_core::Error::unsupported(format!("VA-API: {e}")))?;
             let dpy = Display::open_drm(&path).map_err(|e| {
                 oxideav_core::Error::unsupported(format!(
                     "VA-API: open DRM render node {path:?} failed: {e}"
@@ -1023,9 +1026,7 @@ mod registry_impl {
 
             let frame = dec
                 .decode_slice(sps, pps, &slice_header, nal_unit_type, &access_unit)
-                .map_err(|e| {
-                    oxideav_core::Error::other(format!("VA-API: decode_slice: {e}"))
-                })?;
+                .map_err(|e| oxideav_core::Error::other(format!("VA-API: decode_slice: {e}")))?;
 
             // Convert DecodedFrame (I420) → oxideav_core::VideoFrame.
             let w = dec.display_width() as usize;
@@ -1053,8 +1054,14 @@ mod registry_impl {
                 pts,
                 planes: vec![
                     VideoPlane { stride: w, data: y },
-                    VideoPlane { stride: cw, data: u },
-                    VideoPlane { stride: cw, data: v },
+                    VideoPlane {
+                        stride: cw,
+                        data: u,
+                    },
+                    VideoPlane {
+                        stride: cw,
+                        data: v,
+                    },
                 ],
             }));
             Ok(())
@@ -1096,17 +1103,13 @@ mod registry_impl {
                 match nal_type {
                     bs_h264::NAL_TYPE_SPS => {
                         let sps = bs_h264::parse_sps_nal(nal).map_err(|e| {
-                            oxideav_core::Error::other(format!(
-                                "VA-API: parse SPS NAL: {e}"
-                            ))
+                            oxideav_core::Error::other(format!("VA-API: parse SPS NAL: {e}"))
                         })?;
                         self.cached_sps = Some(sps);
                     }
                     bs_h264::NAL_TYPE_PPS => {
                         let pps = bs_h264::parse_pps_nal(nal).map_err(|e| {
-                            oxideav_core::Error::other(format!(
-                                "VA-API: parse PPS NAL: {e}"
-                            ))
+                            oxideav_core::Error::other(format!("VA-API: parse PPS NAL: {e}"))
                         })?;
                         self.cached_pps = Some(pps);
                     }

@@ -42,9 +42,7 @@ fn open_display_or_skip() -> Option<Display> {
             );
             None
         }
-        Err(other) => panic!(
-            "Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"
-        ),
+        Err(other) => panic!("Display::open_drm: expected Ok or Err(VaError::Init); got {other:?}"),
     }
 }
 
@@ -53,13 +51,16 @@ fn h264_high_decoder_constructs() {
     let Some(dpy) = open_display_or_skip() else {
         return;
     };
-    let dec =
-        H264VaDecoder::new(&dpy, FIXTURE).expect("H264VaDecoder::new on bundled fixture");
+    let dec = H264VaDecoder::new(&dpy, FIXTURE).expect("H264VaDecoder::new on bundled fixture");
     assert_eq!(dec.coded_width(), 320);
     assert_eq!(dec.coded_height(), 240);
     assert_eq!(dec.display_width(), 320);
     assert_eq!(dec.display_height(), 240);
-    assert_ne!(dec.surface(), 0, "render-target surface id should be non-zero");
+    assert_ne!(
+        dec.surface(),
+        0,
+        "render-target surface id should be non-zero"
+    );
 }
 
 /// Read the fixture, decode it, and assert ONE of:
@@ -157,10 +158,9 @@ fn h264_high_idr_decode_succeeds_or_documents_silent_fail() {
         let mad_y = mean_abs_diff(&decoded_y, &ref_y);
         let mad_u = mean_abs_diff(&decoded_u, &ref_u);
         let mad_v = mean_abs_diff(&decoded_v, &ref_v);
-        let mad_total = (mad_y * (w * h) as f64
-            + mad_u * (cw * ch) as f64
-            + mad_v * (cw * ch) as f64)
-            / ((w * h + 2 * cw * ch) as f64);
+        let mad_total =
+            (mad_y * (w * h) as f64 + mad_u * (cw * ch) as f64 + mad_v * (cw * ch) as f64)
+                / ((w * h + 2 * cw * ch) as f64);
 
         eprintln!(
             "round5: cross-validate vs ffmpeg: mad_y={mad_y:.3}, mad_u={mad_u:.3}, \
@@ -184,9 +184,7 @@ fn h264_high_idr_decode_succeeds_or_documents_silent_fail() {
     // No ffmpeg reference available (CI w/o ffmpeg etc.). Use the
     // luma stddev as a lower-bound proxy: if the buffer is non-trivial,
     // log the stats and pass.
-    eprintln!(
-        "round5: ffmpeg reference unavailable — accepting result based on luma stats alone."
-    );
+    eprintln!("round5: ffmpeg reference unavailable — accepting result based on luma stats alone.");
 }
 
 // ─────────────────────────── helpers ─────────────────────────────────────────
@@ -254,8 +252,7 @@ fn render_reference_frame(input: &[u8], w: usize, h: usize) -> Option<(Vec<u8>, 
     }
     let y = out.stdout[..w * h].to_vec();
     let u = out.stdout[w * h..w * h + (w / 2) * (h / 2)].to_vec();
-    let v =
-        out.stdout[w * h + (w / 2) * (h / 2)..w * h + 2 * (w / 2) * (h / 2)].to_vec();
+    let v = out.stdout[w * h + (w / 2) * (h / 2)..w * h + 2 * (w / 2) * (h / 2)].to_vec();
     Some((y, u, v))
 }
 
@@ -316,7 +313,10 @@ fn registry_decoder_roundtrips_idr_packet() {
         panic!("expected VideoFrame, got {frame:?}");
     };
     assert_eq!(v.planes.len(), 3, "expected I420 (3 planes)");
-    assert_eq!(v.planes[0].stride, 320, "Y stride should match display width");
+    assert_eq!(
+        v.planes[0].stride, 320,
+        "Y stride should match display width"
+    );
     assert_eq!(v.planes[0].data.len(), 320 * 240, "Y plane size");
     assert_eq!(v.planes[1].data.len(), 160 * 120, "U plane size");
     assert_eq!(v.planes[2].data.len(), 160 * 120, "V plane size");
@@ -393,20 +393,14 @@ fn registry_decoder_handles_split_sps_pps_idr_packets() {
     // Feed the SPS-only packet — no frame yet, decoder caches the SPS.
     dec.send_packet(&sps_pkt).expect("send_packet sps");
     assert!(
-        matches!(
-            dec.receive_frame(),
-            Err(oxideav_core::Error::NeedMore)
-        ),
+        matches!(dec.receive_frame(), Err(oxideav_core::Error::NeedMore)),
         "no frame should be available after SPS-only packet"
     );
 
     // Same for PPS-only.
     dec.send_packet(&pps_pkt).expect("send_packet pps");
     assert!(
-        matches!(
-            dec.receive_frame(),
-            Err(oxideav_core::Error::NeedMore)
-        ),
+        matches!(dec.receive_frame(), Err(oxideav_core::Error::NeedMore)),
         "no frame should be available after PPS-only packet"
     );
 
@@ -418,9 +412,16 @@ fn registry_decoder_handles_split_sps_pps_idr_packets() {
         panic!("expected VideoFrame, got {frame:?}");
     };
     assert_eq!(v.planes.len(), 3, "expected I420 (3 planes)");
-    assert_eq!(v.planes[0].stride, 320, "Y stride should match display width");
+    assert_eq!(
+        v.planes[0].stride, 320,
+        "Y stride should match display width"
+    );
     assert_eq!(v.planes[0].data.len(), 320 * 240, "Y plane size");
-    assert_eq!(v.pts, Some(33), "frame pts should be carried from the slice packet");
+    assert_eq!(
+        v.pts,
+        Some(33),
+        "frame pts should be carried from the slice packet"
+    );
 }
 
 /// Slice-without-SPS guard: feeding an IDR packet to a fresh decoder

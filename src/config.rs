@@ -67,7 +67,10 @@ impl<'d> Config<'d> {
             // Cast away `const` for the call — libva's C signature is
             // `VAConfigAttrib *attrib_list` even though for
             // vaCreateConfig the values are read-only.
-            (attribs.as_ptr() as *mut VAConfigAttrib, attribs.len() as i32)
+            (
+                attribs.as_ptr() as *mut VAConfigAttrib,
+                attribs.len() as i32,
+            )
         };
 
         let mut id: VAConfigID = 0;
@@ -173,11 +176,26 @@ pub fn supported_attributes(
     // the rest may report VA_ATTRIB_NOT_SUPPORTED depending on
     // codec/entrypoint.
     let mut list: [VAConfigAttrib; 5] = [
-        VAConfigAttrib { ty: attrib::VAConfigAttribRTFormat, value: 0 },
-        VAConfigAttrib { ty: attrib::VAConfigAttribDecSliceMode, value: 0 },
-        VAConfigAttrib { ty: attrib::VAConfigAttribMaxPictureWidth, value: 0 },
-        VAConfigAttrib { ty: attrib::VAConfigAttribMaxPictureHeight, value: 0 },
-        VAConfigAttrib { ty: attrib::VAConfigAttribRateControl, value: 0 },
+        VAConfigAttrib {
+            ty: attrib::VAConfigAttribRTFormat,
+            value: 0,
+        },
+        VAConfigAttrib {
+            ty: attrib::VAConfigAttribDecSliceMode,
+            value: 0,
+        },
+        VAConfigAttrib {
+            ty: attrib::VAConfigAttribMaxPictureWidth,
+            value: 0,
+        },
+        VAConfigAttrib {
+            ty: attrib::VAConfigAttribMaxPictureHeight,
+            value: 0,
+        },
+        VAConfigAttrib {
+            ty: attrib::VAConfigAttribRateControl,
+            value: 0,
+        },
     ];
 
     // SAFETY: list is valid for `len()` writes and outlives the call.
@@ -216,11 +234,13 @@ pub fn get_attribute(
     attrib_type: i32,
 ) -> Result<Option<u32>, VaError> {
     let vt = sys::vtable().map_err(|e| VaError::Sys(e.to_string()))?;
-    let mut one = [VAConfigAttrib { ty: attrib_type, value: 0 }];
+    let mut one = [VAConfigAttrib {
+        ty: attrib_type,
+        value: 0,
+    }];
     // SAFETY: `one` is valid for one write.
-    let status = unsafe {
-        (vt.va_get_config_attributes)(dpy, profile, entrypoint, one.as_mut_ptr(), 1)
-    };
+    let status =
+        unsafe { (vt.va_get_config_attributes)(dpy, profile, entrypoint, one.as_mut_ptr(), 1) };
     if status != VA_STATUS_SUCCESS {
         return Err(VaError::Va {
             status,

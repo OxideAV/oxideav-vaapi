@@ -28,9 +28,7 @@ use std::io;
 use std::os::raw::c_char;
 use std::path::Path;
 
-use crate::sys::{
-    self, error_str, profile, VADisplay, VAStatus, VA_STATUS_SUCCESS,
-};
+use crate::sys::{self, error_str, profile, VADisplay, VAStatus, VA_STATUS_SUCCESS};
 
 /// VA-API profile identifier — the wire value the driver speaks.
 ///
@@ -60,9 +58,7 @@ impl VaProfile {
             profile::VAProfileVC1Main => "VAProfileVC1Main".into(),
             profile::VAProfileVC1Advanced => "VAProfileVC1Advanced".into(),
             profile::VAProfileJPEGBaseline => "VAProfileJPEGBaseline".into(),
-            profile::VAProfileH264ConstrainedBaseline => {
-                "VAProfileH264ConstrainedBaseline".into()
-            }
+            profile::VAProfileH264ConstrainedBaseline => "VAProfileH264ConstrainedBaseline".into(),
             profile::VAProfileVP8Version0_3 => "VAProfileVP8Version0_3".into(),
             profile::VAProfileHEVCMain => "VAProfileHEVCMain".into(),
             profile::VAProfileHEVCMain10 => "VAProfileHEVCMain10".into(),
@@ -167,8 +163,12 @@ impl Display {
         // `O_RDWR | O_CLOEXEC` is the standard render-node access
         // pattern. No mode arg needed because we are not creating
         // the file.
-        let fd =
-            unsafe { libc::open(cpath.as_ptr() as *const c_char, libc::O_RDWR | libc::O_CLOEXEC) };
+        let fd = unsafe {
+            libc::open(
+                cpath.as_ptr() as *const c_char,
+                libc::O_RDWR | libc::O_CLOEXEC,
+            )
+        };
         if fd < 0 {
             return Err(VaError::OpenDrm(io::Error::last_os_error()));
         }
@@ -256,9 +256,7 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buffer is large enough (max entries). `&mut num`
         // is written by libva to the actual count returned.
-        let status = unsafe {
-            (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num)
-        };
+        let status = unsafe { (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num) };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
                 status,
@@ -289,12 +287,7 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buf is valid for 32 writes; `&mut num` outlives call.
         let status = unsafe {
-            (vt.va_query_config_entrypoints)(
-                self.dpy,
-                profile.raw(),
-                buf.as_mut_ptr(),
-                &mut num,
-            )
+            (vt.va_query_config_entrypoints)(self.dpy, profile.raw(), buf.as_mut_ptr(), &mut num)
         };
         if status == sys::VA_STATUS_ERROR_UNSUPPORTED_PROFILE {
             return Ok(Vec::new());
@@ -328,10 +321,7 @@ impl Display {
     /// Subset of `profiles()` filtered to those that advertise
     /// `entrypoint`. Useful for "which codecs can I decode?" or
     /// "which codecs can I encode?" capability dumps.
-    pub fn profiles_with_entrypoint(
-        &self,
-        entrypoint: i32,
-    ) -> Result<Vec<VaProfile>, VaError> {
+    pub fn profiles_with_entrypoint(&self, entrypoint: i32) -> Result<Vec<VaProfile>, VaError> {
         let all = self.profiles()?;
         let mut out = Vec::with_capacity(all.len());
         for p in all {

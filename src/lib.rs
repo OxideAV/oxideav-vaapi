@@ -59,9 +59,9 @@ pub mod sys;
 
 pub use config::Config;
 pub use context::Context;
-pub use decoder::{DecodedFrame, H264VaDecoder};
 #[cfg(feature = "registry")]
 pub use decoder::H264VaCodecDecoder;
+pub use decoder::{DecodedFrame, H264VaDecoder};
 pub use display::{Display, VaError, VaProfile};
 #[cfg(feature = "registry")]
 pub use engine::{device_path_for_index, engine_info};
@@ -127,9 +127,10 @@ fn host_supports_h264_decode() -> bool {
         return false;
     }
     match Display::open_drm(Path::new(RENDER_NODE)) {
-        Ok(dpy) => {
-            dpy.is_supported(VaProfile(sys::profile::VAProfileH264High), sys::entrypoint::VAEntrypointVLD)
-        }
+        Ok(dpy) => dpy.is_supported(
+            VaProfile(sys::profile::VAProfileH264High),
+            sys::entrypoint::VAEntrypointVLD,
+        ),
         Err(_) => false,
     }
 }
