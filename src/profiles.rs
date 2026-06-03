@@ -34,7 +34,7 @@
 
 use std::path::Path;
 
-use crate::display::{Display, VaProfile};
+use crate::display::{Display, EntrypointMatrix, VaProfile};
 use crate::sys::{entrypoint, profile};
 
 /// One row in the codec → VA-API profile table.
@@ -170,9 +170,57 @@ pub fn host_supports_codec_decode(codec_id: &str) -> bool {
     let Ok(dpy) = Display::open_drm(Path::new(RENDER_NODE)) else {
         return false;
     };
-    profiles
-        .iter()
-        .any(|p| dpy.is_supported(VaProfile(*p), entrypoint::VAEntrypointVLD))
+    // Round 9: build the (profile, entrypoints) matrix once and answer
+    // every membership check from it. Without the matrix this loop
+    // issued one `vaQueryConfigEntrypoints` per family profile (4 for
+    // h264, 6 for hevc, etc.); with the matrix it issues one per
+    // *driver-advertised* profile up front and then does pure
+    // in-memory lookups. For the H.264 register() pre-flight, that's
+    // roughly a 4× → ~1× FFI reduction on multi-profile families.
+    let Ok(matrix) = dpy.entrypoint_matrix() else {
+        return false;
+    };
+    matrix.any_supports(profiles, entrypoint::VAEntrypointVLD)
+}
+
+/// Build the [`EntrypointMatrix`] for the canonical render node
+/// (`/dev/dri/renderD128`).
+///
+/// Convenience wrapper for callers that want one shared snapshot of
+/// the host's VA-API capability surface — e.g. registering multiple
+/// codec adapters and pre-flighting each one without paying the FFI
+/// cost N times.
+///
+/// Returns `None` on hosts with no render node, no working driver, or
+/// any error walking the profile list.
+pub fn host_entrypoint_matrix() -> Option<EntrypointMatrix> {
+    const RENDER_NODE: &str = "/dev/dri/renderD128";
+    if !Path::new(RENDER_NODE).exists() {
+        return None;
+    }
+    let dpy = Display::open_drm(Path::new(RENDER_NODE)).ok()?;
+    dpy.entrypoint_matrix().ok()
+}
+
+/// Variant of [`host_supports_codec_decode`] that reuses an existing
+/// [`EntrypointMatrix`]. Use this when pre-flighting several codecs
+/// against the same host so the matrix is built only once.
+pub fn codec_decode_supported(matrix: &EntrypointMatrix, codec_id: &str) -> bool {
+    let Some(profiles) = codec_profiles(codec_id) else {
+        return false;
+    };
+    matrix.any_supports(profiles, entrypoint::VAEntrypointVLD)
+}
+
+/// Variant of [`codec_decode_supported`] for encode capability —
+/// matches the engine probe's "either EncSlice or EncSliceLP counts"
+/// rule.
+pub fn codec_encode_supported(matrix: &EntrypointMatrix, codec_id: &str) -> bool {
+    let Some(profiles) = codec_profiles(codec_id) else {
+        return false;
+    };
+    matrix.any_supports(profiles, entrypoint::VAEntrypointEncSlice)
+        || matrix.any_supports(profiles, entrypoint::VAEntrypointEncSliceLP)
 }
 
 #[cfg(test)]

@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 9 (`EntrypointMatrix` — one-shot `(profile, [entrypoints])` snapshot)
+
+Lifts the `(profile, entrypoint)` membership check out of
+`vaQueryConfigEntrypoints` FFI traffic and into an in-memory snapshot
+that callers consult freely.  The naive shape — repeatedly calling
+`Display::is_supported(profile, entrypoint)` for each codec family
+and each entrypoint we care about — issued one
+`vaQueryConfigEntrypoints` per pair.  On a 25-profile driver with
+seven codec families this came out to roughly fifty round-trips per
+`engine_info()` invocation.  With the matrix it's roughly twenty-five
+(one per advertised profile) plus zero per query.
+
+- New `display::EntrypointMatrix` type — a `Vec<(VaProfile,
+  Vec<i32>)>` wrapped behind a small public API:
+  - `profiles() -> impl Iterator<Item = VaProfile>` — advertised
+    profile list matching `Display::profiles()` exactly.
+  - `len()` / `is_empty()` — trivial accessors.
+  - `entrypoints_for(profile) -> &[i32]` — entrypoints advertised for
+    a single profile; empty slice if the profile isn't in the matrix.
+  - `is_supported(profile, entrypoint) -> bool` — O(rows) membership
+    check, equivalent to `Display::is_supported` but no FFI.
+  - `profiles_with_entrypoint(entrypoint) -> Vec<VaProfile>` —
+    equivalent to `Display::profiles_with_entrypoint`, again FFI-free.
+  - `any_supports(&[i32], entrypoint) -> bool` — "any profile in this
+    list advertises this entrypoint" — the codec-family check shared
+    between `engine::collect_codecs` and `profiles::host_supports_codec_decode`.
+- New `Display::entrypoint_matrix() -> Result<EntrypointMatrix, VaError>`
+  — single-call constructor that issues `vaQueryConfigProfiles` once,
+  then `vaQueryConfigEntrypoints` once per advertised profile.
+- `engine::probe_node` now builds the matrix once per device and
+  threads it through `collect_codecs` + `max_dims_across`. Both
+  functions drop their `Display::is_supported` calls in favour of
+  matrix lookups; `max_dims_across` keeps its `vaGetConfigAttributes`
+  calls because those answer a different question (per-pair max
+  dimensions, not "is the pair advertised").
+- `profiles::host_supports_codec_decode` builds and consults the
+  matrix internally — saves N-1 FFI calls on multi-profile families
+  (h264 = 4, hevc = 6).  New `profiles::host_entrypoint_matrix() ->
+  Option<EntrypointMatrix>` factors out the "open `/dev/dri/renderD128`
+  + build matrix" plumbing; new `profiles::codec_decode_supported`
+  and `profiles::codec_encode_supported` take a `&EntrypointMatrix`
+  + codec id so multi-codec pre-flights share one matrix.
+- New `tests/round9_entrypoint_matrix.rs` (9 tests, skip-friendly on
+  hosts with no render node):
+  - Round-trip checks: matrix `profiles()` == `Display::profiles()`
+    and matrix `is_supported(VLD)` == `Display::is_supported(VLD)`
+    for every advertised profile.
+  - Bulk-filter parity: matrix `profiles_with_entrypoint(VLD)` ==
+    `Display::profiles_with_entrypoint(VLD)`.
+  - Negative paths: `any_supports` over a bogus profile list returns
+    false, `entrypoints_for` on an unadvertised profile returns an
+    empty slice, `codec_*_supported` over an unknown codec id returns
+    false without touching the matrix.
+  - Convergence: `codec_decode_supported(&matrix, "h264")` agrees with
+    `host_supports_codec_decode("h264")` — the two spellings of the
+    same question.
+  - Skip-friendly contract: `host_entrypoint_matrix` returns `None`
+    on no-render-node hosts without panicking.
+
 ### Added — Round 8 (codec-id → VA-API profile family map, shared by `engine.rs` + `register()`)
 
 Lifts the private `CODEC_FAMILIES` table that used to live inside

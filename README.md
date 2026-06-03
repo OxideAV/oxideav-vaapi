@@ -89,27 +89,42 @@ for the loaded driver. On NVIDIA boxes that summary is currently
 
 ## Status
 
-Round 4 (this commit): capability-probing API + driver-reality
-findings.
+Rounds 1–8 landed the dlopen bridge + capability probing + H.264
+decode (pixel-perfect against ffmpeg on the dev box) + engine probe
++ codec-id → `VAProfile` family map.
 
-- `Display::entrypoints`, `Display::is_supported`,
-  `Display::profiles_with_entrypoint` — the post-init introspection
-  surface for "what can this host's VA-API actually accelerate?"
-- `tests/capability_dump.rs` — diagnostic dump that fingerprints
-  what the local VA-API driver advertises.
-- Findings on the NVIDIA RTX 5080 + `nvidia-vaapi-driver 0.0.16` dev
-  box: 18 decode profiles, 0 encode profiles. NVENC (the actual
-  NVIDIA encoder hardware) is reached through the `oxideav-nvidia`
-  sibling crate via NVENC-direct, not via VA-API. Round 3's H.264
-  decode silent-fail (parameter buffers accepted, surface returns
-  constant 0x80) remains unresolved on this host without either a
-  second VA-API driver to cross-validate against or a ground-truth
-  bitstream parser landing in `oxideav-h264`.
+Round 9 (this commit): `EntrypointMatrix` — pre-built
+`(profile, [entrypoints])` snapshot that callers needing several
+capability checks against the same display can consult without
+re-issuing `vaQueryConfigEntrypoints` per pair.
 
-No codec factories are registered yet — `register()` confirms the
-framework loads and returns. Future rounds register codecs once the
-matching parser crate (`oxideav-h264`, `oxideav-hevc`, …) lands and
-`is_supported` confirms the driver accelerates the codec/operation.
+- `Display::entrypoint_matrix() -> Result<EntrypointMatrix, _>` walks
+  the advertised profile list once and pulls each profile's
+  entrypoint set. The returned matrix offers `is_supported`,
+  `profiles_with_entrypoint`, `entrypoints_for`, `any_supports` and
+  `profiles()` — all O(rows) over a small list (~10-30 profiles on
+  real drivers), zero FFI.
+- `engine::engine_info` builds the matrix once per device and
+  consults it from `collect_codecs` + `max_dims_across`. On a
+  25-profile driver with seven codec families this replaces
+  approximately fifty `vaQueryConfigEntrypoints` round-trips per
+  device with one batch of `~25`.
+- `profiles::host_supports_codec_decode` consumes the matrix
+  internally. New `profiles::host_entrypoint_matrix()`,
+  `profiles::codec_decode_supported(&matrix, codec_id)`,
+  `profiles::codec_encode_supported(&matrix, codec_id)` let
+  multi-codec pre-flights share one matrix across an arbitrary
+  number of codec checks.
+
+The H.264 decode factory continues to register at priority 10 on
+hosts where the driver advertises VLD for any H.264 family profile.
+The Round 5 cross-validated pixel-perfect-vs-ffmpeg result remains
+the proof-of-correctness on the dev box.
+
+Future rounds register additional codecs (HEVC, VP9, AV1) once
+matching parser crates land and pre-flight the new
+`codec_decode_supported(&matrix, codec_id)` helper without
+re-walking the profile list.
 
 Tested on hardware against both possible regimes: a working
 `nvidia-vaapi-driver` (success path — vendor `"VA-API NVDEC driver

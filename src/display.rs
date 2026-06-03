@@ -331,6 +331,113 @@ impl Display {
         }
         Ok(out)
     }
+
+    /// Build the full `(profile, [entrypoints])` matrix advertised by
+    /// the driver in a single sweep.
+    ///
+    /// Intended for callers that need to consult several
+    /// `(profile, entrypoint)` pairs in one pass — `engine_info()` and
+    /// the cross-codec capability probes are the in-tree consumers.
+    /// The naive shape `profile × entrypoint × is_supported` issues
+    /// one [`vaQueryConfigEntrypoints`][va] call per `(profile,
+    /// entrypoint)` pair; with N codec families and K entrypoints each
+    /// across a driver advertising P profiles, that's O(P · K · families)
+    /// FFI calls.  Calling `entrypoint_matrix()` once and asking the
+    /// returned [`EntrypointMatrix`] is O(P) FFI calls plus O(1)
+    /// lookups per query.
+    ///
+    /// The returned matrix is a snapshot — the driver's profile /
+    /// entrypoint advertisements are stable across a process lifetime
+    /// in every libva implementation in the wild, so callers can reuse
+    /// the result across multiple capability queries without
+    /// re-walking.
+    ///
+    /// [va]: https://intel.github.io/libva/group__api__core.html
+    pub fn entrypoint_matrix(&self) -> Result<EntrypointMatrix, VaError> {
+        let profiles = self.profiles()?;
+        let mut rows = Vec::with_capacity(profiles.len());
+        for p in profiles {
+            let eps = self.entrypoints(p)?;
+            rows.push((p, eps));
+        }
+        Ok(EntrypointMatrix { rows })
+    }
+}
+
+/// Snapshot of the `(profile, entrypoints)` matrix advertised by a
+/// driver.
+///
+/// Construct via [`Display::entrypoint_matrix`]. Use [`Self::is_supported`]
+/// for yes/no checks, [`Self::profiles_with_entrypoint`] to filter, and
+/// [`Self::profiles`] for the full advertised profile list. All lookups
+/// are O(rows) over a small fixed list (real drivers expose between
+/// ~10 and ~30 profiles); no further FFI traffic.
+///
+/// The matrix is constructed once per [`Display::entrypoint_matrix`]
+/// call. Repeatedly calling [`Display::is_supported`] for the same
+/// driver issues one `vaQueryConfigEntrypoints` per call — building
+/// the matrix amortises those over a single sweep.
+#[derive(Debug, Clone)]
+pub struct EntrypointMatrix {
+    rows: Vec<(VaProfile, Vec<i32>)>,
+}
+
+impl EntrypointMatrix {
+    /// The advertised profile list (matches what [`Display::profiles`]
+    /// would return).
+    pub fn profiles(&self) -> impl Iterator<Item = VaProfile> + '_ {
+        self.rows.iter().map(|(p, _)| *p)
+    }
+
+    /// Total number of profiles in the matrix.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// True iff the matrix is empty (no advertised profiles — sandbox
+    /// drivers, partial init, etc.).
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Entrypoints advertised for `profile`. Empty slice if `profile`
+    /// is not in the matrix (i.e. the driver doesn't advertise it).
+    pub fn entrypoints_for(&self, profile: VaProfile) -> &[i32] {
+        self.rows
+            .iter()
+            .find(|(p, _)| *p == profile)
+            .map(|(_, eps)| eps.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// True iff the driver advertises `entrypoint` for `profile`.
+    ///
+    /// Equivalent to [`Display::is_supported`] but does no FFI.
+    pub fn is_supported(&self, profile: VaProfile, entrypoint: i32) -> bool {
+        self.entrypoints_for(profile).contains(&entrypoint)
+    }
+
+    /// Subset of [`Self::profiles`] filtered to those that advertise
+    /// `entrypoint`. Equivalent to [`Display::profiles_with_entrypoint`]
+    /// but does no FFI.
+    pub fn profiles_with_entrypoint(&self, entrypoint: i32) -> Vec<VaProfile> {
+        self.rows
+            .iter()
+            .filter(|(_, eps)| eps.contains(&entrypoint))
+            .map(|(p, _)| *p)
+            .collect()
+    }
+
+    /// True iff any of the supplied profiles advertise `entrypoint`.
+    ///
+    /// Convenience for "does this codec family support
+    /// decode/encode?" — the matrix is consulted once per family
+    /// profile and the answer is OR'd across them.
+    pub fn any_supports(&self, profiles: &[i32], entrypoint: i32) -> bool {
+        profiles
+            .iter()
+            .any(|raw| self.is_supported(VaProfile(*raw), entrypoint))
+    }
 }
 
 impl Drop for Display {

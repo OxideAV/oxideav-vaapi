@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 use oxideav_core::engine::{HwCodecCaps, HwDeviceInfo};
 
 use crate::config;
-use crate::display::{Display, VaError, VaProfile};
+use crate::display::{Display, EntrypointMatrix, VaError, VaProfile};
 use crate::profiles::KNOWN_CODECS;
 use crate::sys::{attrib, entrypoint};
 
@@ -163,7 +163,16 @@ fn probe_node(path: &Path) -> Option<HwDeviceInfo> {
 
     let extra = vec![("dri_node".to_string(), path.display().to_string())];
 
-    let codecs = collect_codecs(&dpy);
+    // Build the (profile, [entrypoints]) matrix once and let
+    // `collect_codecs` consult it without re-issuing
+    // `vaQueryConfigEntrypoints` for every `(family, entrypoint)` pair.
+    // On a 25-profile driver with 7 codec families this collapses
+    // ~50 FFI calls per device down to ~25.
+    let matrix = match dpy.entrypoint_matrix() {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+    let codecs = collect_codecs(&dpy, &matrix);
 
     Some(HwDeviceInfo {
         name,
@@ -177,58 +186,42 @@ fn probe_node(path: &Path) -> Option<HwDeviceInfo> {
 
 /// Build the per-codec capability matrix for one device.
 ///
-/// We pull the full advertised profile list once via
-/// [`Display::profiles`] and intersect it with each family table —
-/// any family with no advertised profiles is omitted from the result
-/// entirely. For families that do have at least one advertised
-/// profile, the resulting [`HwCodecCaps`] reports decode/encode flags
-/// (any-of-family) and max dims (queried on the headline profile that
-/// is actually advertised).
+/// Round 9: takes a pre-built [`EntrypointMatrix`] so the `(profile,
+/// entrypoint)` membership checks below issue zero FFI calls. The
+/// caller (`probe_node`) constructs the matrix once per device; this
+/// function then iterates [`KNOWN_CODECS`], intersects each family
+/// with the matrix's advertised profiles, and builds the
+/// [`HwCodecCaps`] entries.
 ///
-/// The codec-family table now lives in [`crate::profiles::KNOWN_CODECS`]
+/// The codec-family table lives in [`crate::profiles::KNOWN_CODECS`]
 /// — see that module for the codec id ↔ `VAProfile` mapping.
-fn collect_codecs(dpy: &Display) -> Vec<HwCodecCaps> {
-    let advertised = match dpy.profiles() {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+fn collect_codecs(dpy: &Display, matrix: &EntrypointMatrix) -> Vec<HwCodecCaps> {
     let mut out = Vec::new();
     for fam in KNOWN_CODECS {
         let present: Vec<VaProfile> = fam
             .profiles
             .iter()
             .copied()
-            .filter(|p| advertised.iter().any(|a| a.raw() == *p))
+            .filter(|p| !matrix.entrypoints_for(VaProfile(*p)).is_empty())
             .map(VaProfile)
             .collect();
         if present.is_empty() {
             continue;
         }
 
-        // any-of-family flags
-        let mut decode = false;
-        let mut encode = false;
-        for p in &present {
-            if dpy.is_supported(*p, entrypoint::VAEntrypointVLD) {
-                decode = true;
-            }
-            if dpy.is_supported(*p, entrypoint::VAEntrypointEncSlice)
-                || dpy.is_supported(*p, entrypoint::VAEntrypointEncSliceLP)
-            {
-                encode = true;
-            }
-        }
+        // any-of-family flags — all served from the matrix, no FFI.
+        let decode = matrix.any_supports(fam.profiles, entrypoint::VAEntrypointVLD);
+        let encode = matrix.any_supports(fam.profiles, entrypoint::VAEntrypointEncSlice)
+            || matrix.any_supports(fam.profiles, entrypoint::VAEntrypointEncSliceLP);
 
         // Query MaxPictureWidth / MaxPictureHeight across every
         // (profile, entrypoint) pair the driver advertises in this
         // family, and surface the maximum reported value. Walking the
-        // whole matrix (rather than just the highest decode profile)
-        // is important because some drivers report 0/`VA_ATTRIB_NOT_SUPPORTED`
-        // for one entrypoint but real numbers for the other — Intel
-        // iHD on H.264, for example, reports the limit on EncSliceLP
-        // even when the matching VLD pair returns the same value;
-        // taking the max across both is correct.
-        let (max_width, max_height) = max_dims_across(dpy, &present);
+        // whole matrix (rather than just the headline profile) is
+        // important because some drivers report 0 / `VA_ATTRIB_NOT_SUPPORTED`
+        // for one entrypoint but real numbers for the other — taking
+        // the max across both is the conservative choice.
+        let (max_width, max_height) = max_dims_across(dpy, matrix, &present);
 
         let profiles = present.iter().map(|p| p.name()).collect::<Vec<_>>();
 
@@ -250,16 +243,25 @@ fn collect_codecs(dpy: &Display) -> Vec<HwCodecCaps> {
 /// family and return the maximum reported `MaxPictureWidth` /
 /// `MaxPictureHeight` across all of them.
 ///
+/// Round 9: uses the pre-built [`EntrypointMatrix`] for the membership
+/// check so the only FFI traffic per pair is the
+/// [`vaGetConfigAttributes`] call itself — no
+/// [`vaQueryConfigEntrypoints`] retries.
+///
 /// The libva spec says `vaGetConfigAttributes` returns
 /// `VA_ATTRIB_NOT_SUPPORTED = 0x80000000` for attributes the driver
-/// doesn't implement; in practice some drivers (notably
-/// `nvidia-vaapi-driver` 0.0.16) write `0` instead. We treat both as
+/// doesn't implement; in practice some drivers (notably the NVDEC
+/// libva shim at 0.0.16) write `0` instead. We treat both as
 /// "unknown" — the value is only contributed to the returned max if
 /// it's strictly positive.
 ///
 /// Returns `(None, None)` if no entrypoint reports a real number for
 /// either dimension.
-fn max_dims_across(dpy: &Display, profiles: &[VaProfile]) -> (Option<u32>, Option<u32>) {
+fn max_dims_across(
+    dpy: &Display,
+    matrix: &EntrypointMatrix,
+    profiles: &[VaProfile],
+) -> (Option<u32>, Option<u32>) {
     const ENTRYPOINTS: &[i32] = &[
         entrypoint::VAEntrypointVLD,
         entrypoint::VAEntrypointEncSlice,
@@ -271,7 +273,7 @@ fn max_dims_across(dpy: &Display, profiles: &[VaProfile]) -> (Option<u32>, Optio
 
     for p in profiles {
         for ep in ENTRYPOINTS {
-            if !dpy.is_supported(*p, *ep) {
+            if !matrix.is_supported(*p, *ep) {
                 continue;
             }
             // Driver advertises this `(profile, entrypoint)` pair —
