@@ -19,7 +19,7 @@ use std::path::Path;
 use oxideav_vaapi::sys::{entrypoint, profile};
 use oxideav_vaapi::{
     codec_decode_supported, codec_encode_supported, host_entrypoint_matrix,
-    host_supports_codec_decode, Display, EntrypointMatrix, VaProfile,
+    host_supports_codec_decode, Display, VaProfile,
 };
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
