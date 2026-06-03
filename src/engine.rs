@@ -44,7 +44,8 @@ use oxideav_core::engine::{HwCodecCaps, HwDeviceInfo};
 
 use crate::config;
 use crate::display::{Display, VaError, VaProfile};
-use crate::sys::{attrib, entrypoint, profile};
+use crate::profiles::KNOWN_CODECS;
+use crate::sys::{attrib, entrypoint};
 
 /// Range of DRM render-node minors we attempt to probe. Linux assigns
 /// render nodes starting at minor 128 and the hard upper bound is 191
@@ -174,66 +175,6 @@ fn probe_node(path: &Path) -> Option<HwDeviceInfo> {
     })
 }
 
-/// One row in the codec-family table. Each entry maps a codec id (the
-/// string `oxideav_core::CodecId` uses) to the set of
-/// [`VaProfile`]-encoded profiles that belong to the family. The
-/// "headline" profile — the one used to query `MaxPictureWidth` /
-/// `MaxPictureHeight` — is the last entry in `profiles` (highest
-/// profile in the family); see [`collect_codecs`] for how that's used.
-struct CodecFamily {
-    codec: &'static str,
-    /// Family profiles in ascending capability order. The last one
-    /// is treated as the headline profile for max-dim queries.
-    profiles: &'static [i32],
-}
-
-const CODEC_FAMILIES: &[CodecFamily] = &[
-    CodecFamily {
-        codec: "h264",
-        profiles: &[
-            profile::VAProfileH264ConstrainedBaseline,
-            profile::VAProfileH264Baseline,
-            profile::VAProfileH264Main,
-            profile::VAProfileH264High,
-        ],
-    },
-    CodecFamily {
-        codec: "hevc",
-        profiles: &[
-            profile::VAProfileHEVCMain,
-            profile::VAProfileHEVCMain10,
-            profile::VAProfileHEVCMain12,
-            profile::VAProfileHEVCMain444,
-            profile::VAProfileHEVCMain444_10,
-            profile::VAProfileHEVCMain444_12,
-        ],
-    },
-    CodecFamily {
-        codec: "av1",
-        profiles: &[profile::VAProfileAV1Profile0, profile::VAProfileAV1Profile1],
-    },
-    CodecFamily {
-        codec: "vp8",
-        profiles: &[profile::VAProfileVP8Version0_3],
-    },
-    CodecFamily {
-        codec: "vp9",
-        profiles: &[profile::VAProfileVP9Profile0, profile::VAProfileVP9Profile2],
-    },
-    CodecFamily {
-        codec: "mpeg2",
-        profiles: &[profile::VAProfileMPEG2Simple, profile::VAProfileMPEG2Main],
-    },
-    CodecFamily {
-        codec: "vc1",
-        profiles: &[
-            profile::VAProfileVC1Simple,
-            profile::VAProfileVC1Main,
-            profile::VAProfileVC1Advanced,
-        ],
-    },
-];
-
 /// Build the per-codec capability matrix for one device.
 ///
 /// We pull the full advertised profile list once via
@@ -243,13 +184,16 @@ const CODEC_FAMILIES: &[CodecFamily] = &[
 /// profile, the resulting [`HwCodecCaps`] reports decode/encode flags
 /// (any-of-family) and max dims (queried on the headline profile that
 /// is actually advertised).
+///
+/// The codec-family table now lives in [`crate::profiles::KNOWN_CODECS`]
+/// — see that module for the codec id ↔ `VAProfile` mapping.
 fn collect_codecs(dpy: &Display) -> Vec<HwCodecCaps> {
     let advertised = match dpy.profiles() {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
     let mut out = Vec::new();
-    for fam in CODEC_FAMILIES {
+    for fam in KNOWN_CODECS {
         let present: Vec<VaProfile> = fam
             .profiles
             .iter()

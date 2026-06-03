@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 8 (codec-id → VA-API profile family map, shared by `engine.rs` + `register()`)
+
+Lifts the private `CODEC_FAMILIES` table that used to live inside
+`engine.rs` into a public `profiles` module so codec adapters (today
+just H.264, tomorrow HEVC and VP9) can consult one source of truth
+for "which `VAProfile` values does codec id X refer to?".
+
+- New `pub mod profiles` (always compiled — no `registry` gate)
+  exposing:
+  - `pub const KNOWN_CODECS: &[CodecFamily]` — the codec id →
+    `VAProfile` family table. 8 entries: `h264` / `hevc` / `av1` /
+    `vp8` / `vp9` / `mpeg2` / `vc1` / `jpeg`. Ordering is ascending
+    capability — the last entry is the "headline" profile used for
+    `vaGetConfigAttributes(MaxPictureWidth/Height)` queries.
+  - `pub fn codec_profiles(codec_id) -> Option<&'static [i32]>` —
+    look up the family by id.
+  - `pub fn headline_profile(codec_id) -> Option<VaProfile>` — last
+    entry of the family list.
+  - `pub fn host_supports_codec_decode(codec_id) -> bool` — opens
+    `/dev/dri/renderD128`, checks `VAEntrypointVLD` against every
+    family profile, returns `false` for unknown ids / sandbox CI
+    hosts / drivers that don't accelerate the codec.
+- `register()` in `lib.rs` now calls
+  `host_supports_codec_decode("h264")` instead of the private
+  `host_supports_h264_decode()` helper (which is removed). Same
+  semantics; any future codec adapter that needs the same
+  pre-flight gets the helper for free.
+- `engine.rs::collect_codecs` consumes `KNOWN_CODECS` directly —
+  the private `CodecFamily` struct + table are removed in favour
+  of the shared one in `profiles`. Net delta in `engine.rs`:
+  −60 LOC.
+- New `tests/round8_codec_profiles.rs` (6 tests) covers the codec
+  id round-trip (`KNOWN_CODECS` ↔ `codec_profiles`), the headline
+  profile choice for H.264 / HEVC, the unknown-codec fallback, the
+  skip-friendly no-libva path, and (crucially) that every codec id
+  surfaced by `engine_info()` is present in `KNOWN_CODECS` — i.e.
+  the refactor doesn't drift between the two consumers.
+- New `jpeg` row in `KNOWN_CODECS` (one entry:
+  `VAProfileJPEGBaseline`) — `engine_info()` will now surface a
+  `jpeg` `HwCodecCaps` block on hosts where the driver advertises
+  the JPEG baseline profile (e.g. Intel iHD's MFX JPEG decoder).
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.1...v0.0.2) - 2026-05-06
 
 ### Other
