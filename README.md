@@ -93,7 +93,23 @@ Rounds 1–8 landed the dlopen bridge + capability probing + H.264
 decode (pixel-perfect against ffmpeg on the dev box) + engine probe
 + codec-id → `VAProfile` family map.
 
-Round 9 (this commit): `EntrypointMatrix` — pre-built
+Round 10 (this commit): reverse lookup — `codec_id_for_profile(raw)`
+/ `codec_id_for_va_profile(VaProfile)` answer "which codec family
+does this advertised profile belong to?", complementing the round-8
+forward map `codec_profiles(codec_id) -> &[i32]`. The reverse
+direction is the primitive needed for the next codec adapters
+(HEVC / VP9 / AV1): walk the `EntrypointMatrix` once, bucket each
+advertised profile by codec, dispatch per family.
+
+- `codec_id_for_profile(raw: i32) -> Option<&'static str>` returns
+  `Some("h264")` for any H.264 family value, `Some("hevc")` for
+  HEVC Main/Main10/Main12/Main444[_10/_12], and so on across the
+  whole table — `None` for `VAProfileNone` or future / vendor
+  profile values the table doesn't yet know about.
+- `codec_id_for_va_profile(VaProfile)` is the typed wrapper that
+  saves a `.raw()` at the call site.
+
+Round 9: `EntrypointMatrix` — pre-built
 `(profile, [entrypoints])` snapshot that callers needing several
 capability checks against the same display can consult without
 re-issuing `vaQueryConfigEntrypoints` per pair.

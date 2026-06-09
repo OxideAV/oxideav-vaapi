@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Round 10 (reverse lookup: `codec_id_for_profile`)
+
+Complements the round-8 forward map (`codec_profiles(id) -> &[i32]`)
+with the reverse direction: given a raw `VAProfile` value (or a typed
+[`VaProfile`]), return the codec id of the family it belongs to.
+
+This is the primitive callers need when iterating an
+[`EntrypointMatrix`]'s advertised profile list and bucketing each
+profile by codec — e.g. building a `(codec, [profile])` index for the
+HEVC / VP9 / AV1 adapters planned in the README roadmap. Without it,
+each row has to re-scan `KNOWN_CODECS` by hand; the helper lifts the
+scan into the table module so callers stay single-line.
+
+- New `profiles::codec_id_for_profile(raw: i32) -> Option<&'static str>`
+  — O(KNOWN_CODECS · max_family_len) scan; returns the codec id of
+  the row that contains `raw`, or `None` for unmapped values
+  (`VAProfileNone`, future/vendor-specific values).
+- New `profiles::codec_id_for_va_profile(VaProfile) -> Option<&'static str>`
+  — typed wrapper around the raw variant; same semantics, drops a
+  `.raw()` at the call site.
+- Both helpers re-exported at the crate root.
+- 6 new unit tests in `src/profiles.rs` covering: H.264 / HEVC / VP9
+  / AV1 family resolution, `None` for `VAProfileNone` and out-of-range
+  values, typed-vs-raw parity across every table entry, and the
+  forward-reverse round-trip (every profile in the table maps back to
+  a codec id whose `codec_profiles` slice contains it).
+- New `tests/round10_codec_id_lookup.rs` (6 tests, skip-friendly on
+  hosts with no render node):
+  - `reverse_lookup_covers_every_table_entry` — pure table sweep.
+  - `reverse_lookup_returns_none_for_va_profile_none` /
+    `_for_unknown_value` — sentinel + range guards.
+  - `typed_and_raw_variants_agree_for_every_table_entry`.
+  - `matrix_advertised_profiles_bucket_by_codec_without_panic` /
+    `matrix_codec_id_lookup_matches_table_for_recognised_profiles`
+    — driver-touching parity checks against a real
+    `EntrypointMatrix`.
+  - `reverse_lookup_zero_collision_across_families` — guard against
+    two rows accidentally claiming the same profile.
+
 ### Added — Round 9 (`EntrypointMatrix` — one-shot `(profile, [entrypoints])` snapshot)
 
 Lifts the `(profile, entrypoint)` membership check out of

@@ -128,6 +128,37 @@ pub fn codec_profiles(codec_id: &str) -> Option<&'static [i32]> {
         .map(|f| f.profiles)
 }
 
+/// Reverse lookup: given a raw `VAProfile` value, return the codec id
+/// of the family it belongs to.
+///
+/// This complements [`codec_profiles`] — that function answers "which
+/// profiles does this codec id cover?", and this one answers "which
+/// codec does this profile belong to?". Returns `None` for profile
+/// values not represented in [`KNOWN_CODECS`] (e.g.
+/// `VAProfileNone = -1`, or future profiles the table hasn't been
+/// updated for).
+///
+/// Useful for callers walking the driver's advertised profile list
+/// (e.g. an [`EntrypointMatrix`] iteration) that want to bucket each
+/// advertised profile by codec without re-scanning the whole table per
+/// row — one O(KNOWN_CODECS · max_family_len) sweep per profile is
+/// cheap in absolute terms (~30 i32 compares on the current table) and
+/// the API turns the "which codec is this driver advertising?" question
+/// into a single-line lookup at the call site.
+pub fn codec_id_for_profile(profile: i32) -> Option<&'static str> {
+    KNOWN_CODECS
+        .iter()
+        .find(|f| f.profiles.contains(&profile))
+        .map(|f| f.codec)
+}
+
+/// Variant of [`codec_id_for_profile`] that takes a [`VaProfile`]
+/// newtype rather than a raw `i32`. Identical semantics; saves callers
+/// a `.raw()` at the call site.
+pub fn codec_id_for_va_profile(profile: VaProfile) -> Option<&'static str> {
+    codec_id_for_profile(profile.raw())
+}
+
 /// The "headline" profile for a codec id — the last (highest)
 /// [`VaProfile`] in the family's ascending list. This is the profile
 /// max-dim and rate-control queries are routed against when callers
@@ -294,5 +325,97 @@ mod tests {
         // H.264 decode, or we don't (sandbox / CI / no GPU stack). Both
         // are valid; the call must not panic.
         let _ = host_supports_codec_decode("h264");
+    }
+
+    #[test]
+    fn codec_id_for_profile_resolves_h264_family() {
+        // Every H.264 family profile value must map back to "h264".
+        for raw in [
+            profile::VAProfileH264ConstrainedBaseline,
+            profile::VAProfileH264Baseline,
+            profile::VAProfileH264Main,
+            profile::VAProfileH264High,
+        ] {
+            assert_eq!(
+                codec_id_for_profile(raw),
+                Some("h264"),
+                "raw profile {raw} did not map back to h264"
+            );
+        }
+    }
+
+    #[test]
+    fn codec_id_for_profile_resolves_hevc_family() {
+        // HEVC has the broadest family (6 profiles); make sure each
+        // one round-trips. This is the most-likely-to-drift family
+        // because it's still growing — HEVC Main12 was added after
+        // Main10, and Main444 variants are still optional on many
+        // drivers.
+        for raw in [
+            profile::VAProfileHEVCMain,
+            profile::VAProfileHEVCMain10,
+            profile::VAProfileHEVCMain12,
+            profile::VAProfileHEVCMain444,
+            profile::VAProfileHEVCMain444_10,
+            profile::VAProfileHEVCMain444_12,
+        ] {
+            assert_eq!(codec_id_for_profile(raw), Some("hevc"));
+        }
+    }
+
+    #[test]
+    fn codec_id_for_profile_resolves_vp9_av1() {
+        // The two next-up planned codecs per the README roadmap.
+        for raw in [profile::VAProfileVP9Profile0, profile::VAProfileVP9Profile2] {
+            assert_eq!(codec_id_for_profile(raw), Some("vp9"));
+        }
+        for raw in [profile::VAProfileAV1Profile0, profile::VAProfileAV1Profile1] {
+            assert_eq!(codec_id_for_profile(raw), Some("av1"));
+        }
+    }
+
+    #[test]
+    fn codec_id_for_profile_returns_none_for_unknown() {
+        // VAProfileNone (-1) is the canonical "no profile" sentinel and
+        // is intentionally NOT in any family. Numbers above the highest
+        // table entry are equally unmapped.
+        assert!(codec_id_for_profile(profile::VAProfileNone).is_none());
+        assert!(codec_id_for_profile(9999).is_none());
+        assert!(codec_id_for_profile(-9999).is_none());
+    }
+
+    #[test]
+    fn codec_id_for_va_profile_matches_raw_variant() {
+        // The typed `VaProfile` wrapper must answer the same question
+        // as the raw `i32` variant — anything else would mean callers
+        // got different results depending on which entry point they
+        // used.
+        for fam in KNOWN_CODECS {
+            for raw in fam.profiles {
+                assert_eq!(
+                    codec_id_for_va_profile(VaProfile(*raw)),
+                    codec_id_for_profile(*raw),
+                    "VaProfile / raw disagreement on profile {raw}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn codec_id_round_trips_through_codec_profiles() {
+        // Strongest consistency check: every profile in the table must
+        // map back to a codec id whose `codec_profiles` slice contains
+        // the original profile. If this fails, the two helpers are
+        // looking at different views of the same table.
+        for fam in KNOWN_CODECS {
+            for raw in fam.profiles {
+                let codec = codec_id_for_profile(*raw).expect("table entry maps back");
+                let profiles = codec_profiles(codec).expect("returned codec id is in the table");
+                assert!(
+                    profiles.contains(raw),
+                    "round-trip lost: profile {raw} → {codec} → profile list {profiles:?}"
+                );
+            }
+        }
     }
 }
