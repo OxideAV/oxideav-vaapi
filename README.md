@@ -89,69 +89,45 @@ for the loaded driver. On NVIDIA boxes that summary is currently
 
 ## Status
 
-Rounds 1–8 landed the dlopen bridge + capability probing + H.264
-decode (pixel-perfect against ffmpeg on the dev box) + engine probe
-+ codec-id → `VAProfile` family map.
+The dlopen bridge, capability probing, the engine probe, and the
+codec-id ↔ `VAProfile` family map are in place. H.264 decode is
+wired and validated against a black-box decoder binary; it registers
+at priority 10 on hosts where the driver advertises VLD for any H.264
+family profile.
 
-Round 10 (this commit): reverse lookup — `codec_id_for_profile(raw)`
-/ `codec_id_for_va_profile(VaProfile)` answer "which codec family
-does this advertised profile belong to?", complementing the round-8
-forward map `codec_profiles(codec_id) -> &[i32]`. The reverse
-direction is the primitive needed for the next codec adapters
-(HEVC / VP9 / AV1): walk the `EntrypointMatrix` once, bucket each
-advertised profile by codec, dispatch per family.
+Capability / family-map surface:
 
-- `codec_id_for_profile(raw: i32) -> Option<&'static str>` returns
-  `Some("h264")` for any H.264 family value, `Some("hevc")` for
-  HEVC Main/Main10/Main12/Main444[_10/_12], and so on across the
-  whole table — `None` for `VAProfileNone` or future / vendor
-  profile values the table doesn't yet know about.
-- `codec_id_for_va_profile(VaProfile)` is the typed wrapper that
-  saves a `.raw()` at the call site.
+- `codec_profiles(codec_id) -> &[i32]` — forward map from codec id to
+  the advertised `VAProfile` family values.
+- `codec_id_for_profile(raw: i32) -> Option<&'static str>` /
+  `codec_id_for_va_profile(VaProfile)` — reverse lookup answering
+  "which codec family does this advertised profile belong to?"
+  (`Some("h264")` for any H.264 family value, `Some("hevc")` for
+  HEVC Main/Main10/Main12/Main444[_10/_12], …; `None` for
+  `VAProfileNone` or unknown vendor profiles).
+- `EntrypointMatrix` — a pre-built `(profile, [entrypoints])` snapshot
+  (`Display::entrypoint_matrix()`) that callers needing several
+  capability checks against the same display can consult without
+  re-issuing `vaQueryConfigEntrypoints` per pair. Offers
+  `is_supported`, `profiles_with_entrypoint`, `entrypoints_for`,
+  `any_supports`, `profiles()` — all O(rows), zero FFI. `engine_info`
+  builds it once per device; `profiles::host_entrypoint_matrix()` /
+  `codec_decode_supported(&matrix, codec_id)` /
+  `codec_encode_supported(&matrix, codec_id)` let multi-codec
+  pre-flights share one matrix.
 
-Round 9: `EntrypointMatrix` — pre-built
-`(profile, [entrypoints])` snapshot that callers needing several
-capability checks against the same display can consult without
-re-issuing `vaQueryConfigEntrypoints` per pair.
-
-- `Display::entrypoint_matrix() -> Result<EntrypointMatrix, _>` walks
-  the advertised profile list once and pulls each profile's
-  entrypoint set. The returned matrix offers `is_supported`,
-  `profiles_with_entrypoint`, `entrypoints_for`, `any_supports` and
-  `profiles()` — all O(rows) over a small list (~10-30 profiles on
-  real drivers), zero FFI.
-- `engine::engine_info` builds the matrix once per device and
-  consults it from `collect_codecs` + `max_dims_across`. On a
-  25-profile driver with seven codec families this replaces
-  approximately fifty `vaQueryConfigEntrypoints` round-trips per
-  device with one batch of `~25`.
-- `profiles::host_supports_codec_decode` consumes the matrix
-  internally. New `profiles::host_entrypoint_matrix()`,
-  `profiles::codec_decode_supported(&matrix, codec_id)`,
-  `profiles::codec_encode_supported(&matrix, codec_id)` let
-  multi-codec pre-flights share one matrix across an arbitrary
-  number of codec checks.
-
-The H.264 decode factory continues to register at priority 10 on
-hosts where the driver advertises VLD for any H.264 family profile.
-The Round 5 cross-validated pixel-perfect-vs-ffmpeg result remains
-the proof-of-correctness on the dev box.
-
-Future rounds register additional codecs (HEVC, VP9, AV1) once
-matching parser crates land and pre-flight the new
-`codec_decode_supported(&matrix, codec_id)` helper without
+Additional codec adapters (HEVC, VP9, AV1) register once matching
+parser crates land, pre-flighting `codec_decode_supported` without
 re-walking the profile list.
 
-Tested on hardware against both possible regimes: a working
-`nvidia-vaapi-driver` (success path — vendor `"VA-API NVDEC driver
-[direct backend]"`, 18 profiles, all `VLD`-only) and a hypothetical
-no-driver setup (graceful-failure path — `VaError::Init` carries
-the driver-supplied message). The integration tests are regime-
-agnostic and pass on both.
+Integration tests are regime-agnostic and pass both against a working
+driver (success path — vendor string, profile list, entrypoint set)
+and against a no-driver setup (graceful-failure path — `VaError::Init`
+carries the driver-supplied message).
 
 ## Workspace policy
 
-Calling a system OS / driver API via FFI is the same shape as calling `libc::malloc` — it's the platform, not a copied algorithm. The workspace's clean-room rule (no embedding source from libvpx, libwebp, libjxl, etc.) does not apply to this crate.
+Calling a system OS / driver API via FFI is the same shape as calling `libc::malloc` — it's the platform, not a copied algorithm. The workspace's clean-room rule (no embedding third-party codec library source) does not apply to this crate.
 
 ## License
 
