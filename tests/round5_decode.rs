@@ -23,6 +23,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use oxideav_vaapi::sys::VA_INVALID_ID;
 use oxideav_vaapi::{Display, H264VaDecoder, VaError};
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
@@ -58,8 +59,8 @@ fn h264_high_decoder_constructs() {
     assert_eq!(dec.display_height(), 240);
     assert_ne!(
         dec.surface(),
-        0,
-        "render-target surface id should be non-zero"
+        VA_INVALID_ID,
+        "render-target surface id is invalid"
     );
 }
 

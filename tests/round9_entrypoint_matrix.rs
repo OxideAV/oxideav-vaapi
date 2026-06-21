@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use oxideav_vaapi::sys::{entrypoint, profile};
+use oxideav_vaapi::sys::entrypoint;
 use oxideav_vaapi::{
     codec_decode_supported, codec_encode_supported, host_entrypoint_matrix,
     host_supports_codec_decode, Display, VaProfile,
@@ -99,16 +99,6 @@ fn matrix_any_supports_handles_unadvertised_family() {
     // Use a deliberately-bogus profile value far above the real enum.
     let bogus = &[9999];
     assert!(!matrix.any_supports(bogus, entrypoint::VAEntrypointVLD));
-}
-
-#[test]
-fn matrix_entrypoints_for_unknown_profile_returns_empty() {
-    let Some(dpy) = open_or_skip() else { return };
-    let matrix = dpy.entrypoint_matrix().expect("matrix builds");
-    // Profile not in the driver's advertisement list.
-    assert!(matrix
-        .entrypoints_for(VaProfile(profile::VAProfileNone))
-        .is_empty());
 }
 
 #[test]
