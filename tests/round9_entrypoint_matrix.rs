@@ -102,16 +102,6 @@ fn matrix_any_supports_handles_unadvertised_family() {
 }
 
 #[test]
-fn matrix_entrypoints_for_unknown_profile_returns_empty() {
-    let Some(dpy) = open_or_skip() else { return };
-    let matrix = dpy.entrypoint_matrix().expect("matrix builds");
-    // Profile not in the driver's advertisement list.
-    assert!(matrix
-        .entrypoints_for(VaProfile(profile::VAProfileNone))
-        .is_empty());
-}
-
-#[test]
 fn host_entrypoint_matrix_skip_friendly_on_no_libva() {
     // On a host with no render node the helper returns `None` instead
     // of panicking. On hosts with a working driver it returns

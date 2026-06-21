@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use oxideav_vaapi::sys::{attrib, entrypoint, profile, VA_RT_FORMAT_YUV420};
+use oxideav_vaapi::sys::{attrib, entrypoint, profile, VA_INVALID_ID, VA_RT_FORMAT_YUV420};
 use oxideav_vaapi::{config, Config, Context, Display, VaError};
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
@@ -94,7 +94,7 @@ fn h264_high_decode_context_creates() {
         1,
         "context should own exactly the one surface we requested"
     );
-    assert_ne!(ctx.surfaces()[0], 0, "surface id 0 is suspicious");
+    assert_ne!(ctx.surfaces()[0], VA_INVALID_ID, "surface id is invalid");
 }
 
 #[test]
