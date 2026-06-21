@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.2...v0.0.3) - 2026-06-21
+
+### Fixed
+
+- correct VA-API test assumptions (surface-id sentinel + VAProfileNone)
+
+### Other
+
+- refresh to current status, drop per-round changelog cruft
+- round 10: codec_id_for_profile — reverse lookup over the family table
+- round 9: drop unused EntrypointMatrix import in test
+- round 9: EntrypointMatrix — one-shot (profile, [entrypoints]) snapshot
+- lift codec id → VAProfile family map into public module
+
 ### Added — Round 10 (reverse lookup: `codec_id_for_profile`)
 
 Complements the round-8 forward map (`codec_profiles(id) -> &[i32]`)
