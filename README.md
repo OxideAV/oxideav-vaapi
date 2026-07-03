@@ -1,5 +1,7 @@
 # oxideav-vaapi
 
+[![CI](https://github.com/OxideAV/oxideav-vaapi/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-vaapi/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-vaapi.svg)](https://crates.io/crates/oxideav-vaapi) [![docs.rs](https://docs.rs/oxideav-vaapi/badge.svg)](https://docs.rs/oxideav-vaapi) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Linux VA-API hardware decode/encode bridge for the [oxideav](https://github.com/OxideAV/oxideav) framework.
 
 ## Why a bridge crate?
