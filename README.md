@@ -25,7 +25,7 @@ The whole crate is `#![cfg(target_os = "linux")]`. On macOS / Windows it compile
 
 ## Priority
 
-Hardware factories register with `CodecCapabilities::with_priority(10)` — **lower numbers win at resolution time**, so on Linux+VA-API hardware paths are preferred over the pure-Rust impls (which sit at priority 100+).
+**Lower numbers win at resolution time.** The H.264 decoder registers at `H264_DECODE_PRIORITY` (150), *behind* the pure-Rust `h264_sw` (100): it is still single-picture I/IDR scope (no DPB, no P/B inter prediction), so it is selected only when a caller opts in via `CodecPreferences::prefer` / `require_hardware`.
 
 ## Opt-out
 
@@ -94,8 +94,9 @@ for the loaded driver. On NVIDIA boxes that summary is currently
 
 The dlopen bridge, capability probing, the engine probe, and the
 codec-id ↔ `VAProfile` family map are in place. H.264 decode is
-wired and validated against a black-box decoder binary; it registers
-at priority 10 on hosts where the driver advertises VLD for any H.264
+wired and validated against a black-box decoder binary for I/IDR
+pictures; it registers at priority 150 (opt-in, behind the pure-Rust
+decoder) on hosts where the driver advertises VLD for any H.264
 family profile.
 
 Capability / family-map surface:

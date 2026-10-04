@@ -72,19 +72,30 @@ pub use profiles::{
     KNOWN_CODECS,
 };
 
-/// Confirm the VA-API framework loads and (Round 5) register the
-/// hardware H.264 decoder factory at priority 10.
+/// Confirm the VA-API framework loads and register the hardware H.264
+/// decoder factory at [`H264_DECODE_PRIORITY`] (behind the pure-Rust
+/// decoder — see there).
 ///
 /// Round 5: the Round 3 H.264 decode silent-fail wall is RESOLVED.
 /// With the shared [`oxideav_bitstream`] parser populating the
 /// parameter buffers, decode produces a pixel-perfect match against
 /// ffmpeg's reference (mean abs diff = 0/255 on the 320×240 fixture).
 /// The factory is registered with `hardware_accelerated = true` and
-/// priority 10, ahead of the pure-Rust default.
+/// priority [`H264_DECODE_PRIORITY`].
 ///
 /// If `libva.so.2` / `libva-drm.so.2` cannot be loaded (no GPU stack
 /// installed, sandboxed environment, etc.) the function logs and
 /// returns — the runtime falls back to the pure-Rust impls.
+/// Resolution priority of the VA-API H.264 decoder (lower wins).
+///
+/// The streaming decoder is still single-picture I/IDR scope — no DPB,
+/// no P/B inter prediction, no weighted prediction — so it must not
+/// outrank the complete pure-Rust `h264_sw` (priority 100): on Intel /
+/// AMD hosts it used to win selection and real streams (any P/B
+/// frame) decoded to nothing. It stays registered so callers can opt
+/// in with `CodecPreferences::prefer` / `require_hardware`.
+pub const H264_DECODE_PRIORITY: i32 = 150;
+
 #[cfg(feature = "registry")]
 pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
     match sys::framework() {
@@ -110,7 +121,7 @@ pub fn register(ctx: &mut oxideav_core::RuntimeContext) {
                     oxideav_core::CodecCapabilities::video("vaapi-h264")
                         .with_decode()
                         .with_hardware(true)
-                        .with_priority(10)
+                        .with_priority(H264_DECODE_PRIORITY)
                         .with_max_size(4096, 4096),
                 )
                 .decoder(decoder::h264_decoder_factory)
