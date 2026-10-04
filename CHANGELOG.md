@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.3...v0.0.4) - 2026-10-04
+
+### Other
+
+- rank the IDR-only H.264 decoder behind the pure-Rust h264_sw
+- README points CodecPreferences at oxideav-pipeline
+- README examples use the current registry API
+- add CI / crates.io / docs.rs / MIT-license badges
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.2...v0.0.3) - 2026-06-21
 
 ### Fixed
