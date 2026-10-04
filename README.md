@@ -15,7 +15,7 @@ This crate is a **thin runtime-loaded bridge** — no compile-time link dependen
 Two distinct failure paths fall back automatically to the pure-Rust codec:
 
 1. **Load failure** — `libva.so.2` or `libva-drm.so.2` not installed, distro without GPU stack, sandboxed environment without `/dev/dri` access. `register()` logs and returns without registering, so the SW codec is the only candidate at dispatch.
-2. **Init failure** — `vaInitialize` / `vaCreateConfig` / `vaCreateContext` return a non-zero `VAStatus` for the requested parameters. Common triggers: stream above the driver's max resolution, profile the GPU doesn't accelerate, no compatible DRI render node. The factory returns `Err`; the registry's `make_decoder_with` / `make_encoder_with` retries the next-priority impl (typically the SW one).
+2. **Init failure** — `vaInitialize` / `vaCreateConfig` / `vaCreateContext` return a non-zero `VAStatus` for the requested parameters. Common triggers: stream above the driver's max resolution, profile the GPU doesn't accelerate, no compatible DRI render node. The factory returns `Err`; `oxideav_pipeline::make_decoder_with` / `make_encoder_with` (the selection walker over the registry) retries the next-priority impl (typically the SW one).
 
 Pipelines that **require** hardware can opt out of the SW fallback by setting `CodecPreferences { require_hardware: true, .. }` — the registry will then surface the `VAStatus` error instead of degrading silently.
 
@@ -59,7 +59,7 @@ because what VA-API drivers actually do varies dramatically by
 vendor / chip / driver version. Three helpers cover the typical
 audit:
 
-```rust,ignore
+```rust,no_run
 use oxideav_vaapi::{Display, VaProfile};
 use oxideav_vaapi::sys::{profile, entrypoint};
 use std::path::Path;
@@ -81,6 +81,7 @@ let h264_entries = dpy.entrypoints(
 let encode_capable = dpy.profiles_with_entrypoint(
     entrypoint::VAEntrypointEncSlice,
 )?;
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 The diagnostic `capability_dump` test (`cargo test -p oxideav-vaapi
