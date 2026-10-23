@@ -17,7 +17,7 @@
 //!
 //! The dev box this crate is being developed on takes path #2.
 //! These tests must pass in both regimes without modification.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

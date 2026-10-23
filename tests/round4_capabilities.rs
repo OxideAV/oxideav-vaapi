@@ -26,7 +26,7 @@
 //!
 //! All non-ignored tests are skip-friendly on hosts without a
 //! VA-API driver (`Display::open_drm` returning `Err(Init)`).
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

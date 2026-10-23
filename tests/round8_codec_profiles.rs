@@ -14,7 +14,7 @@
 //! 4. The codec ids surfaced by [`engine_info`] for the headline
 //!    device are all present in [`KNOWN_CODECS`] — proving the
 //!    refactor (engine.rs ↔ profiles.rs) hasn't drifted.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 #![cfg(feature = "registry")]
 

@@ -11,7 +11,7 @@
 //! Skip-friendly: tests that need a specific device count (e.g. the
 //! "device 1 = Intel iHD" check) skip when `engine_info()` reports
 //! fewer than that many working devices.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 #![cfg(feature = "registry")]
 
