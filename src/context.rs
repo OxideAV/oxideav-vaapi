@@ -61,7 +61,7 @@ impl<'d> Context<'d> {
         // `num_surfaces` writes; attribute list is NULL/0 so libva
         // picks defaults (NV12 internal layout on nvidia-vaapi-driver).
         let status = unsafe {
-            (vt.va_create_surfaces)(
+            crate::host::native(|| (vt.va_create_surfaces)(
                 dpy.raw(),
                 VA_RT_FORMAT_YUV420,
                 width,
@@ -70,7 +70,7 @@ impl<'d> Context<'d> {
                 num_surfaces,
                 std::ptr::null_mut(),
                 0,
-            )
+            ))
         };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
@@ -83,7 +83,7 @@ impl<'d> Context<'d> {
         // SAFETY: `surfaces` is now populated by libva. `flag = 0` is
         // the default — see header comment in va.h on vaCreateContext.
         let status = unsafe {
-            (vt.va_create_context)(
+            crate::host::native(|| (vt.va_create_context)(
                 dpy.raw(),
                 config.id(),
                 width as i32,
@@ -92,17 +92,17 @@ impl<'d> Context<'d> {
                 surfaces.as_mut_ptr(),
                 surfaces.len() as i32,
                 &mut context_id,
-            )
+            ))
         };
         if status != VA_STATUS_SUCCESS {
             // Best-effort: tear down the surfaces we just allocated.
             // SAFETY: `surfaces` is the list we just got from libva.
             unsafe {
-                let _ = (vt.va_destroy_surfaces)(
+                let _ = crate::host::native(|| (vt.va_destroy_surfaces)(
                     dpy.raw(),
                     surfaces.as_mut_ptr(),
                     surfaces.len() as i32,
-                );
+                ));
             }
             return Err(VaError::Va {
                 status,
@@ -144,12 +144,12 @@ impl<'d> Drop for Context<'d> {
             // and has not been destroyed yet. Best-effort — ignore
             // VAStatus because there's nothing actionable at drop time.
             unsafe {
-                let _ = (vt.va_destroy_context)(self.dpy, self.context_id);
-                let _ = (vt.va_destroy_surfaces)(
+                let _ = crate::host::native(|| (vt.va_destroy_context)(self.dpy, self.context_id));
+                let _ = crate::host::native(|| (vt.va_destroy_surfaces)(
                     self.dpy,
                     self.surfaces.as_mut_ptr(),
                     self.surfaces.len() as i32,
-                );
+                ));
             }
         }
     }

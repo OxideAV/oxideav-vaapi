@@ -14,7 +14,12 @@
 //! Other backends (`libva-x11`, `libva-wayland`, `libva-glx`) exist
 //! and may be added later — DRM is the headless / server-friendly
 //! default and is what oxideav uses for transcoding pipelines.
+//!
+//! A host that reaches libva another way installs a
+//! [`crate::host::HostLoader`] first; the vtable is then resolved through
+//! it and nothing is `dlopen`ed here.
 
+#[cfg(feature = "system-loader")]
 use dlsym::Library;
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -521,6 +526,14 @@ pub type FnVaPutImage = unsafe extern "C" fn(
 // DRM backend (libva-drm.so.2)
 pub type FnVaGetDisplayDRM = unsafe extern "C" fn(fd: i32) -> VADisplay;
 
+/// The C library's `open`, called with Linux flag values.
+pub type FnOpen = unsafe extern "C" fn(path: *const c_char, flags: i32) -> i32;
+/// The C library's `close`.
+pub type FnClose = unsafe extern "C" fn(fd: i32) -> i32;
+
+/// Linux `O_RDWR | O_CLOEXEC`, for a render node opened through [`Vtable::open`].
+pub const O_RDWR_CLOEXEC: i32 = 0o2 | 0o2000000;
+
 // ─────────────────────────── Vtable ───────────────────────────────────────────
 
 /// Resolved function pointers for the bootstrap VA-API symbol set.
@@ -561,14 +574,18 @@ pub struct Vtable {
     pub va_max_num_image_formats: FnVaMaxNumImageFormats,
     // libva-drm
     pub va_get_display_drm: FnVaGetDisplayDRM,
-    // Keep libraries alive
-    _va: Library,
-    _va_drm: Library,
+    // the C library's, for the render node
+    pub open: FnOpen,
+    pub close: FnClose,
+    // Keep libraries alive (none when a host loader resolved the table)
+    #[cfg(feature = "system-loader")]
+    _libraries: Option<(Library, Library)>,
 }
 
 /// Smoke-test wrapper used by tests + by the pre-flight load check
 /// in `register()`. Holds the raw `Library` handles so callers can
 /// assert that dlopen succeeded without paying the full dlsym tour.
+#[cfg(feature = "system-loader")]
 pub struct FrameworkSmoke {
     pub libva: Library,
     pub libva_drm: Library,
@@ -577,7 +594,13 @@ pub struct FrameworkSmoke {
 // ─────────────────────────── Caches ───────────────────────────────────────────
 
 static VTABLE: OnceLock<Result<Vtable, String>> = OnceLock::new();
+#[cfg(feature = "system-loader")]
 static FRAMEWORK: OnceLock<Result<FrameworkSmoke, String>> = OnceLock::new();
+
+/// Whether the vtable has been loaded (or its load attempted).
+pub(crate) fn vtable_loaded() -> bool {
+    VTABLE.get().is_some()
+}
 
 /// Get (or load) the fully-resolved vtable. Returns the cached `Err`
 /// if a previous load attempt failed.
@@ -590,6 +613,7 @@ pub fn vtable() -> Result<&'static Vtable, &'static str> {
 
 /// Cheap framework-load check used by `register()`. Resolves the two
 /// libraries but does no dlsym work.
+#[cfg(feature = "system-loader")]
 pub fn framework() -> Result<&'static FrameworkSmoke, &'static str> {
     FRAMEWORK
         .get_or_init(load_smoke)
@@ -597,6 +621,7 @@ pub fn framework() -> Result<&'static FrameworkSmoke, &'static str> {
         .map_err(|s| s.as_str())
 }
 
+#[cfg(feature = "system-loader")]
 fn load_smoke() -> Result<FrameworkSmoke, String> {
     Ok(FrameworkSmoke {
         libva: open("libva.so.2")?,
@@ -605,6 +630,69 @@ fn load_smoke() -> Result<FrameworkSmoke, String> {
 }
 
 fn load_vtable() -> Result<Vtable, String> {
+    if let Some(host) = crate::host::installed() {
+        return load_vtable_host(host);
+    }
+    load_vtable_system()
+}
+
+fn load_vtable_host(host: &crate::host::HostLoader) -> Result<Vtable, String> {
+    macro_rules! sym {
+        ($lib:ident, $name:expr, $ty:ty) => {{
+            // SAFETY: the host promised `resolve` returns the named C
+            // function or null; a non-null result has the documented prototype.
+            let p = unsafe { (host.resolve)(host.context, concat!($name, "\0").as_ptr() as *const c_char) };
+            if p.is_null() {
+                return Err(format!("host loader: no {}", $name));
+            }
+            unsafe { std::mem::transmute::<*mut c_void, $ty>(p) }
+        }};
+    }
+    Ok(Vtable {
+        va_initialize: sym!(libva, "vaInitialize", FnVaInitialize),
+        va_terminate: sym!(libva, "vaTerminate", FnVaTerminate),
+        va_error_str: sym!(libva, "vaErrorStr", FnVaErrorStr),
+        va_query_vendor_string: sym!(libva, "vaQueryVendorString", FnVaQueryVendorString),
+        va_max_num_profiles: sym!(libva, "vaMaxNumProfiles", FnVaMaxNumProfiles),
+        va_query_config_profiles: sym!(libva, "vaQueryConfigProfiles", FnVaQueryConfigProfiles),
+        va_create_config: sym!(libva, "vaCreateConfig", FnVaCreateConfig),
+        va_create_context: sym!(libva, "vaCreateContext", FnVaCreateContext),
+        va_create_surfaces: sym!(libva, "vaCreateSurfaces", FnVaCreateSurfaces),
+        va_destroy_surfaces: sym!(libva, "vaDestroySurfaces", FnVaDestroySurfaces),
+        va_begin_picture: sym!(libva, "vaBeginPicture", FnVaBeginPicture),
+        va_render_picture: sym!(libva, "vaRenderPicture", FnVaRenderPicture),
+        va_end_picture: sym!(libva, "vaEndPicture", FnVaEndPicture),
+        va_create_buffer: sym!(libva, "vaCreateBuffer", FnVaCreateBuffer),
+        va_query_config_entrypoints: sym!(libva, "vaQueryConfigEntrypoints", FnVaQueryConfigEntrypoints),
+        va_get_config_attributes: sym!(libva, "vaGetConfigAttributes", FnVaGetConfigAttributes),
+        va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
+        va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
+        va_sync_surface: sym!(libva, "vaSyncSurface", FnVaSyncSurface),
+        va_destroy_buffer: sym!(libva, "vaDestroyBuffer", FnVaDestroyBuffer),
+        va_map_buffer: sym!(libva, "vaMapBuffer", FnVaMapBuffer),
+        va_unmap_buffer: sym!(libva, "vaUnmapBuffer", FnVaUnmapBuffer),
+        va_derive_image: sym!(libva, "vaDeriveImage", FnVaDeriveImage),
+        va_destroy_image: sym!(libva, "vaDestroyImage", FnVaDestroyImage),
+        va_get_image: sym!(libva, "vaGetImage", FnVaGetImage),
+        va_put_image: sym!(libva, "vaPutImage", FnVaPutImage),
+        va_create_image: sym!(libva, "vaCreateImage", FnVaCreateImage),
+        va_query_image_formats: sym!(libva, "vaQueryImageFormats", FnVaQueryImageFormats),
+        va_max_num_image_formats: sym!(libva, "vaMaxNumImageFormats", FnVaMaxNumImageFormats),
+        va_get_display_drm: sym!(libva_drm, "vaGetDisplayDRM", FnVaGetDisplayDRM),
+        open: sym!(libc, "open", FnOpen),
+        close: sym!(libc, "close", FnClose),
+        #[cfg(feature = "system-loader")]
+        _libraries: None,
+    })
+}
+
+#[cfg(not(feature = "system-loader"))]
+fn load_vtable_system() -> Result<Vtable, String> {
+    Err("no host loader installed".into())
+}
+
+#[cfg(feature = "system-loader")]
+fn load_vtable_system() -> Result<Vtable, String> {
     let libva = open("libva.so.2")?;
     let libva_drm = open("libva-drm.so.2")?;
 
@@ -638,11 +726,7 @@ fn load_vtable() -> Result<Vtable, String> {
         va_render_picture: sym!(libva, "vaRenderPicture", FnVaRenderPicture),
         va_end_picture: sym!(libva, "vaEndPicture", FnVaEndPicture),
         va_create_buffer: sym!(libva, "vaCreateBuffer", FnVaCreateBuffer),
-        va_query_config_entrypoints: sym!(
-            libva,
-            "vaQueryConfigEntrypoints",
-            FnVaQueryConfigEntrypoints
-        ),
+        va_query_config_entrypoints: sym!(libva, "vaQueryConfigEntrypoints", FnVaQueryConfigEntrypoints),
         va_get_config_attributes: sym!(libva, "vaGetConfigAttributes", FnVaGetConfigAttributes),
         va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
         va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
@@ -658,11 +742,24 @@ fn load_vtable() -> Result<Vtable, String> {
         va_query_image_formats: sym!(libva, "vaQueryImageFormats", FnVaQueryImageFormats),
         va_max_num_image_formats: sym!(libva, "vaMaxNumImageFormats", FnVaMaxNumImageFormats),
         va_get_display_drm: sym!(libva_drm, "vaGetDisplayDRM", FnVaGetDisplayDRM),
-        _va: libva,
-        _va_drm: libva_drm,
+        open: libc_open,
+        close: libc_close,
+        _libraries: Some((libva, libva_drm)),
     })
 }
 
+#[cfg(feature = "system-loader")]
+unsafe extern "C" fn libc_open(path: *const c_char, flags: i32) -> i32 {
+    // Linux flag values (`O_RDWR_CLOEXEC`), the target's own here.
+    libc::open(path, flags)
+}
+
+#[cfg(feature = "system-loader")]
+unsafe extern "C" fn libc_close(fd: i32) -> i32 {
+    libc::close(fd)
+}
+
+#[cfg(feature = "system-loader")]
 fn open(path: &str) -> Result<Library, String> {
     // SAFETY: dlopen on a soname with no init callbacks; equivalent to
     // a normal program startup load.
@@ -673,7 +770,7 @@ fn open(path: &str) -> Result<Library, String> {
 /// fallback if the driver hands back a null pointer (it shouldn't for
 /// known status codes, but treat it defensively).
 pub fn error_str(vt: &Vtable, status: VAStatus) -> String {
-    let p = unsafe { (vt.va_error_str)(status) };
+    let p = unsafe { crate::host::native(|| (vt.va_error_str)(status)) };
     if p.is_null() {
         return format!("VAStatus 0x{:x}", status as u32);
     }
@@ -684,7 +781,7 @@ pub fn error_str(vt: &Vtable, status: VAStatus) -> String {
     cstr.to_string_lossy().into_owned()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "system-loader"))]
 mod tests {
     use super::*;
 

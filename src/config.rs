@@ -78,14 +78,14 @@ impl<'d> Config<'d> {
         // `Display::open_drm`). `attrib_ptr` is either NULL (with
         // `num = 0`) or points to `num` valid `VAConfigAttrib` values.
         let status = unsafe {
-            (vt.va_create_config)(
+            crate::host::native(|| (vt.va_create_config)(
                 dpy.raw(),
                 profile,
                 entrypoint,
                 attrib_ptr as *mut std::ffi::c_void,
                 num,
                 &mut id,
-            )
+            ))
         };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
@@ -149,7 +149,7 @@ impl<'d> Drop for Config<'d> {
             // SAFETY: id is the value returned from the matching
             // vaCreateConfig and has not been destroyed yet.
             unsafe {
-                let _ = (vt.va_destroy_config)(self.dpy, self.id);
+                let _ = crate::host::native(|| (vt.va_destroy_config)(self.dpy, self.id));
             }
         }
     }
@@ -200,13 +200,13 @@ pub fn supported_attributes(
 
     // SAFETY: list is valid for `len()` writes and outlives the call.
     let status = unsafe {
-        (vt.va_get_config_attributes)(
+        crate::host::native(|| (vt.va_get_config_attributes)(
             dpy,
             profile,
             entrypoint,
             list.as_mut_ptr(),
             list.len() as i32,
-        )
+        ))
     };
     if status != VA_STATUS_SUCCESS {
         return Err(VaError::Va {
@@ -240,7 +240,7 @@ pub fn get_attribute(
     }];
     // SAFETY: `one` is valid for one write.
     let status =
-        unsafe { (vt.va_get_config_attributes)(dpy, profile, entrypoint, one.as_mut_ptr(), 1) };
+        unsafe { crate::host::native(|| (vt.va_get_config_attributes)(dpy, profile, entrypoint, one.as_mut_ptr(), 1)) };
     if status != VA_STATUS_SUCCESS {
         return Err(VaError::Va {
             status,
