@@ -291,7 +291,7 @@ fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
 #[test]
 fn registry_decoder_roundtrips_idr_packet() {
     use oxideav_core::{
-        rational::Rational, time::TimeBase, CodecId, Decoder, Frame, Packet, PixelFormat,
+        CodecId, Decoder, Frame, Packet, PixelFormat, rational::Rational, time::TimeBase,
     };
     use oxideav_vaapi::H264VaCodecDecoder;
 
@@ -335,7 +335,7 @@ fn registry_decoder_roundtrips_idr_packet() {
 #[test]
 fn registry_decoder_handles_split_sps_pps_idr_packets() {
     use oxideav_bitstream::h264 as bs_h264;
-    use oxideav_core::{time::TimeBase, CodecId, Decoder, Frame, Packet};
+    use oxideav_core::{CodecId, Decoder, Frame, Packet, time::TimeBase};
     use oxideav_vaapi::H264VaCodecDecoder;
 
     if !Path::new(RENDER_NODE).exists() {
@@ -432,7 +432,7 @@ fn registry_decoder_handles_split_sps_pps_idr_packets() {
 #[test]
 fn registry_decoder_errors_on_slice_without_sps() {
     use oxideav_bitstream::h264 as bs_h264;
-    use oxideav_core::{time::TimeBase, CodecId, Decoder, Packet};
+    use oxideav_core::{CodecId, Decoder, Packet, time::TimeBase};
     use oxideav_vaapi::H264VaCodecDecoder;
 
     if !Path::new(RENDER_NODE).exists() {

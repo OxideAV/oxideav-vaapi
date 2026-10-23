@@ -22,8 +22,8 @@
 
 use std::path::Path;
 
-use oxideav_vaapi::sys::{attrib, entrypoint, profile, VA_INVALID_ID, VA_RT_FORMAT_YUV420};
-use oxideav_vaapi::{config, Config, Context, Display, VaError};
+use oxideav_vaapi::sys::{VA_INVALID_ID, VA_RT_FORMAT_YUV420, attrib, entrypoint, profile};
+use oxideav_vaapi::{Config, Context, Display, VaError, config};
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
 

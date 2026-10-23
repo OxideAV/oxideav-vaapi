@@ -20,8 +20,8 @@ use std::path::Path;
 
 use oxideav_vaapi::sys::profile;
 use oxideav_vaapi::{
-    codec_id_for_profile, codec_id_for_va_profile, codec_profiles, host_entrypoint_matrix, Display,
-    VaProfile, KNOWN_CODECS,
+    Display, KNOWN_CODECS, VaProfile, codec_id_for_profile, codec_id_for_va_profile,
+    codec_profiles, host_entrypoint_matrix,
 };
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";

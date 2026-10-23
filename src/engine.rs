@@ -286,20 +286,18 @@ fn max_dims_across(
                 p.raw(),
                 *ep,
                 attrib::VAConfigAttribMaxPictureWidth,
-            ) {
-                if v != 0 {
-                    max_w = Some(max_w.map_or(v, |cur| cur.max(v)));
-                }
+            ) && v != 0
+            {
+                max_w = Some(max_w.map_or(v, |cur| cur.max(v)));
             }
             if let Ok(Some(v)) = config::get_attribute(
                 dpy.raw(),
                 p.raw(),
                 *ep,
                 attrib::VAConfigAttribMaxPictureHeight,
-            ) {
-                if v != 0 {
-                    max_h = Some(max_h.map_or(v, |cur| cur.max(v)));
-                }
+            ) && v != 0
+            {
+                max_h = Some(max_h.map_or(v, |cur| cur.max(v)));
             }
         }
     }

@@ -37,16 +37,16 @@
 
 use std::ffi::c_void;
 
-use oxideav_bitstream::h264 as bs_h264;
 use oxideav_bitstream::BitstreamError;
+use oxideav_bitstream::h264 as bs_h264;
 
 use crate::config::Config;
 use crate::context::Context;
 use crate::display::{Display, VaError};
 use crate::sys::{
-    self, buffer_type, error_str, VABufferID, VAIQMatrixBufferH264, VAImage, VAImageFormat,
-    VAPictureH264, VAPictureParameterBufferH264, VASliceParameterBufferH264, VA_FOURCC_NV12,
-    VA_INVALID_SURFACE, VA_PICTURE_H264_INVALID, VA_SLICE_DATA_FLAG_ALL, VA_STATUS_SUCCESS,
+    self, VA_FOURCC_NV12, VA_INVALID_SURFACE, VA_PICTURE_H264_INVALID, VA_SLICE_DATA_FLAG_ALL,
+    VA_STATUS_SUCCESS, VABufferID, VAIQMatrixBufferH264, VAImage, VAImageFormat, VAPictureH264,
+    VAPictureParameterBufferH264, VASliceParameterBufferH264, buffer_type, error_str,
 };
 
 impl From<BitstreamError> for VaError {
@@ -750,7 +750,9 @@ fn compute_slice_data_bit_offset(
                 } else {
                     return Err(VaError::Va {
                         status: 0,
-                        message: format!("ref_pic_list_modification_l0: invalid modification_of_pic_nums_idc={m}"),
+                        message: format!(
+                            "ref_pic_list_modification_l0: invalid modification_of_pic_nums_idc={m}"
+                        ),
                     });
                 }
             }
@@ -1168,7 +1170,7 @@ mod registry_impl {
 }
 
 #[cfg(feature = "registry")]
-pub use registry_impl::{h264_decoder_factory, H264VaCodecDecoder};
+pub use registry_impl::{H264VaCodecDecoder, h264_decoder_factory};
 
 /// Read the NV12 image bytes the driver wrote into `image_buf` and
 /// return them as a planar I420 [`DecodedFrame`].

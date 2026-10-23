@@ -28,7 +28,7 @@ use std::io;
 use std::os::raw::c_char;
 use std::path::Path;
 
-use crate::sys::{self, error_str, profile, VADisplay, VAStatus, VA_STATUS_SUCCESS};
+use crate::sys::{self, VA_STATUS_SUCCESS, VADisplay, VAStatus, error_str, profile};
 
 /// VA-API profile identifier — the wire value the driver speaks.
 ///
@@ -445,11 +445,12 @@ impl Drop for Display {
         // Best-effort teardown — ignore VAStatus / errno because
         // there's nothing actionable we can do at drop time, and
         // panicking here would mask a more useful upstream panic.
-        if let Ok(vt) = sys::vtable() {
-            if self.api_version.is_some() && !self.dpy.is_null() {
-                // SAFETY: `dpy` came from a successful init pair.
-                unsafe { (vt.va_terminate)(self.dpy) };
-            }
+        if let Ok(vt) = sys::vtable()
+            && self.api_version.is_some()
+            && !self.dpy.is_null()
+        {
+            // SAFETY: `dpy` came from a successful init pair.
+            unsafe { (vt.va_terminate)(self.dpy) };
         }
         if self.fd >= 0 {
             // SAFETY: fd was opened by us via `libc::open` and not

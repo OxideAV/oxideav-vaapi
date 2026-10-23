@@ -22,7 +22,7 @@ use std::path::Path;
 
 use oxideav_vaapi::sys::profile;
 use oxideav_vaapi::{
-    codec_profiles, engine_info, headline_profile, host_supports_codec_decode, KNOWN_CODECS,
+    KNOWN_CODECS, codec_profiles, engine_info, headline_profile, host_supports_codec_decode,
 };
 
 #[test]

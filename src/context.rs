@@ -23,7 +23,7 @@ use std::marker::PhantomData;
 use crate::config::Config;
 use crate::display::{Display, VaError};
 use crate::sys::{
-    self, error_str, VAContextID, VADisplay, VASurfaceID, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
+    self, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS, VAContextID, VADisplay, VASurfaceID, error_str,
 };
 
 /// Owned `VAContextID` plus the render-target surfaces attached to it.

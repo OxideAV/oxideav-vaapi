@@ -67,9 +67,9 @@ pub use display::{Display, EntrypointMatrix, VaError, VaProfile};
 #[cfg(feature = "registry")]
 pub use engine::{device_path_for_index, engine_info};
 pub use profiles::{
-    codec_decode_supported, codec_encode_supported, codec_id_for_profile, codec_id_for_va_profile,
-    codec_profiles, headline_profile, host_entrypoint_matrix, host_supports_codec_decode,
-    KNOWN_CODECS,
+    KNOWN_CODECS, codec_decode_supported, codec_encode_supported, codec_id_for_profile,
+    codec_id_for_va_profile, codec_profiles, headline_profile, host_entrypoint_matrix,
+    host_supports_codec_decode,
 };
 
 /// Confirm the VA-API framework loads and register the hardware H.264

@@ -609,7 +609,7 @@ fn load_vtable() -> Result<Vtable, String> {
     let libva_drm = open("libva-drm.so.2")?;
 
     macro_rules! sym {
-        ($lib:expr, $name:expr, $ty:ty) => {{
+        ($lib:expr_2021, $name:expr_2021, $ty:ty) => {{
             let s: libloading::Symbol<$ty> = unsafe {
                 $lib.get(concat!($name, "\0").as_bytes())
                     .map_err(|e| format!("dlsym {}: {}", $name, e))?

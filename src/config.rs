@@ -30,8 +30,8 @@ use std::marker::PhantomData;
 
 use crate::display::{Display, VaError};
 use crate::sys::{
-    self, attrib, error_str, VAConfigAttrib, VAConfigID, VADisplay, VA_ATTRIB_NOT_SUPPORTED,
-    VA_STATUS_SUCCESS,
+    self, VA_ATTRIB_NOT_SUPPORTED, VA_STATUS_SUCCESS, VAConfigAttrib, VAConfigID, VADisplay,
+    attrib, error_str,
 };
 
 /// Safe `VAConfigID` wrapper.

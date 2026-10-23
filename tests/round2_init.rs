@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use oxideav_vaapi::{sys, Display, VaError};
+use oxideav_vaapi::{Display, VaError, sys};
 
 const RENDER_NODE: &str = "/dev/dri/renderD128";
 
