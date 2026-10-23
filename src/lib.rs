@@ -63,6 +63,8 @@ pub mod engine;
 pub mod hevc;
 #[cfg(feature = "av1")]
 pub mod av1;
+#[cfg(feature = "h264")]
+pub mod h264;
 #[cfg(feature = "vp9")]
 pub mod vp9;
 pub mod host;

@@ -27,6 +27,9 @@ oxideav-vp9 = { version = "0.0.13", optional = true }
 # AV1 decode (`av1` feature): OBUs, sequence and frame headers from the
 # AV1 crate.
 oxideav-av1 = { version = "0.1.21", optional = true }
+# H.264 decode (`h264` feature): parameter sets, slice headers, picture
+# order counts, reference lists and marking from the H.264 crate.
+oxideav-h264 = { version = "0.1.9", optional = true }
 
 # The default `system-loader` feature dlopens libva with dlsym and opens
 # the render node with libc. Without it the crate builds on any target and
@@ -72,3 +75,5 @@ hevc = ["dep:oxideav-h265"]
 vp9 = ["dep:oxideav-vp9"]
 # AV1 decode over oxideav-av1's header parser.
 av1 = ["dep:oxideav-av1"]
+# H.264 decode over oxideav-h264's parser and reference picture management.
+h264 = ["dep:oxideav-h264"]
