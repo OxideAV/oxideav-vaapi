@@ -17,7 +17,7 @@
 //! 3. `h264_high_supports_yuv420_render_target` — query
 //!    `VAConfigAttribRTFormat` and assert `VA_RT_FORMAT_YUV420`
 //!    (bit 0x01) is set.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

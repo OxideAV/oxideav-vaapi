@@ -18,7 +18,7 @@
 //! On `nvidia-vaapi-driver 0.0.16` (RTX 5080 dev box) the encode summary
 //! always reports zero, because that driver only wraps NVDEC. This test
 //! is the canonical way to confirm that fact on a given host.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

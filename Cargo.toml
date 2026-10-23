@@ -17,18 +17,31 @@ categories = ["multimedia::encoding", "multimedia::video", "hardware-support"]
 # tooling consumers can depend on `oxideav-vaapi` with
 # `default-features = false` and avoid the framework dependency tree.
 oxideav-core = { version = "0.1", optional = true }
+# HEVC decode (`hevc` feature): parameter sets, slice headers and the
+# reference picture set / DPB bookkeeping come from the HEVC crate's
+# own parser; the bridge only translates them into VA buffers.
+oxideav-h265 = { version = "0.0.15", optional = true }
+# VP9 decode (`vp9` feature): uncompressed frame headers, loop filter
+# levels and quantizers from the VP9 crate.
+oxideav-vp9 = { version = "0.0.13", optional = true }
+# AV1 decode (`av1` feature): OBUs, sequence and frame headers from the
+# AV1 crate.
+oxideav-av1 = { version = "0.1.21", optional = true }
+# H.264 decode (`h264` feature): parameter sets, slice headers, picture
+# order counts, reference lists and marking from the H.264 crate.
+oxideav-h264 = { version = "0.1.9", optional = true }
 
-# dlsym is only pulled on Linux targets — every non-linux build
-# ships a stub `register()` that's a no-op (the entire crate body is
-# `#![cfg(target_os = "linux")]`).
+# The default `system-loader` feature dlopens libva with dlsym and opens
+# the render node with libc. Without it the crate builds on any target and
+# reaches libva only through a `host::HostLoader`.
 [target.'cfg(target_os = "linux")'.dependencies]
-dlsym = "0.0.2"
+dlsym = { version = "0.0.2", optional = true }
 # `libc` is a thin, well-vetted set of POSIX constants/typedefs used
 # only for `open`/`close` of the DRM render node. Treated like a
 # standard binding, NOT a competing implementation — calling
 # `libc::open` is the same shape as calling `dlopen`, both are
 # platform interfaces.
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 # Shared minimal IDR/keyframe header parser — H.264 / HEVC / AV1.
 # The vaapi bridge feeds parsed SPS/PPS/slice fields into the
 # `VAPictureParameterBufferH264` / `VAPictureParameterBufferHEVC`
@@ -36,7 +49,7 @@ libc = "0.2"
 # other via plain `version = "0.0"` strings; the workspace
 # `[patch.crates-io]` entry redirects local builds to
 # `crates/oxideav-bitstream/`.
-oxideav-bitstream = "0.0"
+oxideav-bitstream = { version = "0.0", optional = true }
 # Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
 # via the `oxideav_core::register!` macro. Linux-only because the
 # entire crate body is `#![cfg(target_os = "linux")]`. Optional +
@@ -45,10 +58,26 @@ oxideav-bitstream = "0.0"
 linkme = { version = "0.3", optional = true }
 
 [features]
-default = ["registry"]
+default = ["registry", "system-loader"]
 
 # Wires up the codec/encoder/decoder trait implementations against
 # `oxideav-core` so the crate can plug into the `oxideav` framework
 # registry. Default-on; turn off for tooling that just wants the raw
 # VA-API bridge bindings without the framework.
-registry = ["dep:oxideav-core", "dep:linkme"]
+registry = ["dep:oxideav-core", "dep:linkme", "system-loader", "bitstream"]
+# dlopen libva.so.2 / libva-drm.so.2 (Linux only).
+system-loader = ["dep:libc", "dep:dlsym"]
+# The IDR-only H.264 decoder over oxideav-bitstream's parser.
+bitstream = ["dep:oxideav-bitstream"]
+# HEVC decode over oxideav-h265's parser.
+hevc = ["dep:oxideav-h265"]
+# VP9 decode over oxideav-vp9's header parser.
+vp9 = ["dep:oxideav-vp9"]
+# AV1 decode over oxideav-av1's header parser.
+av1 = ["dep:oxideav-av1"]
+# H.264 decode over oxideav-h264's parser and reference picture management.
+h264 = ["dep:oxideav-h264"]
+
+[dev-dependencies]
+# The hardware decode test compares frames by MD5.
+md-5 = "0.10"

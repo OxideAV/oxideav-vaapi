@@ -2,7 +2,7 @@
 //!
 //! The lifecycle is:
 //!
-//! 1. `libc::open("/dev/dri/renderD128", O_RDWR)` — gets a file
+//! 1. `open("/dev/dri/renderD128", O_RDWR)` — gets a file
 //!    descriptor for the GPU's DRM render node.
 //! 2. `vaGetDisplayDRM(fd)` — produces a `VADisplay` handle from the
 //!    fd. This is the libva DRM backend's display constructor; it
@@ -78,7 +78,7 @@ impl VaProfile {
 /// Errors surfaced by the `Display` wrapper.
 #[derive(Debug)]
 pub enum VaError {
-    /// `libc::open` on the DRM render node failed (no `/dev/dri`,
+    /// `open` on the DRM render node failed (no `/dev/dri`,
     /// permission denied, fd table exhausted, …).
     OpenDrm(io::Error),
     /// `vaGetDisplayDRM` returned a null pointer. This shouldn't
@@ -122,7 +122,7 @@ impl std::error::Error for VaError {}
 ///
 /// `Drop` releases everything in reverse order:
 /// 1. `vaTerminate(display)` — only if `vaInitialize` succeeded
-/// 2. `libc::close(fd)`
+/// 2. `close(fd)`
 ///
 /// A half-initialized display (open succeeded, init failed) is
 /// dropped immediately by [`Display::open_drm`] — only the fd is
@@ -145,7 +145,7 @@ impl Display {
     /// `vaInitialize`.
     ///
     /// Steps:
-    /// 1. `libc::open(path, O_RDWR | O_CLOEXEC)` — `OpenDrm` on failure.
+    /// 1. the C library's `open(path, O_RDWR | O_CLOEXEC)` — `OpenDrm` on failure.
     /// 2. `vaGetDisplayDRM(fd)` — `GetDisplayNull` on null result.
     /// 3. `vaInitialize` — `Init { status, message }` on failure,
     ///    with `message` from `vaErrorStr`.
@@ -163,23 +163,23 @@ impl Display {
         // `O_RDWR | O_CLOEXEC` is the standard render-node access
         // pattern. No mode arg needed because we are not creating
         // the file.
-        let fd = unsafe {
-            libc::open(
-                cpath.as_ptr() as *const c_char,
-                libc::O_RDWR | libc::O_CLOEXEC,
-            )
-        };
+        let fd = crate::host::native(|| unsafe {
+            (vt.open)(cpath.as_ptr() as *const c_char, sys::O_RDWR_CLOEXEC)
+        });
         if fd < 0 {
-            return Err(VaError::OpenDrm(io::Error::last_os_error()));
+            return Err(VaError::OpenDrm(io::Error::other(format!(
+                "cannot open {}",
+                path.display()
+            ))));
         }
 
         // SAFETY: `fd` is a valid open file descriptor; libva-drm's
         // contract is to dup it internally so we still own and must
         // close ours.
-        let dpy = unsafe { (vt.va_get_display_drm)(fd) };
+        let dpy = unsafe { crate::host::native(|| (vt.va_get_display_drm)(fd)) };
         if dpy.is_null() {
             // SAFETY: `fd` is a value we just received from `open`; close it.
-            unsafe { libc::close(fd) };
+            crate::host::native(|| unsafe { (vt.close)(fd) });
             return Err(VaError::GetDisplayNull);
         }
 
@@ -187,12 +187,13 @@ impl Display {
         let mut minor: i32 = 0;
         // SAFETY: `dpy` non-null, `&mut` outlives the call. libva
         // writes the negotiated API version on success.
-        let status = unsafe { (vt.va_initialize)(dpy, &mut major, &mut minor) };
+        let status =
+            unsafe { crate::host::native(|| (vt.va_initialize)(dpy, &mut major, &mut minor)) };
         if status != VA_STATUS_SUCCESS {
             let message = error_str(vt, status);
             // Don't `vaTerminate` — init failed. Just close the fd.
             // SAFETY: same as above.
-            unsafe { libc::close(fd) };
+            crate::host::native(|| unsafe { (vt.close)(fd) });
             return Err(VaError::Init { status, message });
         }
 
@@ -230,7 +231,7 @@ impl Display {
         // SAFETY: `dpy` is valid (we hold it). `vaQueryVendorString`
         // returns a pointer to a static string owned by the driver;
         // valid until the display is terminated.
-        let p = unsafe { (vt.va_query_vendor_string)(self.dpy) };
+        let p = unsafe { crate::host::native(|| (vt.va_query_vendor_string)(self.dpy)) };
         if p.is_null() {
             return Err(VaError::Va {
                 status: VA_STATUS_SUCCESS,
@@ -248,7 +249,7 @@ impl Display {
     pub fn profiles(&self) -> Result<Vec<VaProfile>, VaError> {
         let vt = sys::vtable().map_err(|e| VaError::Sys(e.to_string()))?;
         // SAFETY: `dpy` is valid.
-        let max = unsafe { (vt.va_max_num_profiles)(self.dpy) };
+        let max = unsafe { crate::host::native(|| (vt.va_max_num_profiles)(self.dpy)) };
         if max <= 0 {
             return Ok(Vec::new());
         }
@@ -256,7 +257,11 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buffer is large enough (max entries). `&mut num`
         // is written by libva to the actual count returned.
-        let status = unsafe { (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num) };
+        let status = unsafe {
+            crate::host::native(|| {
+                (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num)
+            })
+        };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
                 status,
@@ -287,7 +292,14 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buf is valid for 32 writes; `&mut num` outlives call.
         let status = unsafe {
-            (vt.va_query_config_entrypoints)(self.dpy, profile.raw(), buf.as_mut_ptr(), &mut num)
+            crate::host::native(|| {
+                (vt.va_query_config_entrypoints)(
+                    self.dpy,
+                    profile.raw(),
+                    buf.as_mut_ptr(),
+                    &mut num,
+                )
+            })
         };
         if status == sys::VA_STATUS_ERROR_UNSUPPORTED_PROFILE {
             return Ok(Vec::new());
@@ -450,12 +462,14 @@ impl Drop for Display {
             && !self.dpy.is_null()
         {
             // SAFETY: `dpy` came from a successful init pair.
-            unsafe { (vt.va_terminate)(self.dpy) };
+            unsafe { crate::host::native(|| (vt.va_terminate)(self.dpy)) };
         }
-        if self.fd >= 0 {
-            // SAFETY: fd was opened by us via `libc::open` and not
+        if self.fd >= 0
+            && let Ok(vt) = sys::vtable()
+        {
+            // SAFETY: fd was opened by us through `vt.open` and not
             // closed elsewhere.
-            unsafe { libc::close(self.fd) };
+            crate::host::native(|| unsafe { (vt.close)(self.fd) });
         }
     }
 }

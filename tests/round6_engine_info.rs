@@ -6,7 +6,7 @@
 //! the headline test exits early. The dev box (RTX 5080 +
 //! `nvidia-vaapi-driver 0.0.16`) sees `/dev/dri/renderD128` and
 //! `/dev/dri/renderD129`, both reporting the NVDEC vendor string.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 #![cfg(feature = "registry")]
 

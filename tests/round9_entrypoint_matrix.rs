@@ -11,7 +11,7 @@
 //! matrix mirrors the existing [`Display::profiles`] /
 //! [`Display::is_supported`] / [`Display::profiles_with_entrypoint`]
 //! results for at least one profile/entrypoint pair.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

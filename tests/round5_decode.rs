@@ -17,7 +17,7 @@
 //!    0x80. Round 3 wall holds; the parser was never the issue.
 //! 3. **Anything else** — decoded output is non-trivial but doesn't
 //!    match ffmpeg. We surface the diff number; this is news.
-
+#![cfg(all(feature = "system-loader", feature = "bitstream"))]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

@@ -13,7 +13,7 @@
 //!
 //! All driver-touching tests are skip-friendly: on a host with no
 //! `/dev/dri/renderD128` they short-circuit without panic.
-
+#![cfg(feature = "system-loader")]
 #![cfg(target_os = "linux")]
 
 use std::path::Path;

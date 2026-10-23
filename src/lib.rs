@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", not(feature = "system-loader")))]
 //! Linux VA-API hardware decode/encode bridge.
 //!
 //! This crate is a **runtime-loaded** bridge to the
@@ -16,7 +16,10 @@
 //! The crate is gated to `cfg(target_os = "linux")` at the source
 //! level: on macOS / Windows the entire crate compiles to an empty
 //! rlib, and consumers (umbrella `oxideav`) gate the `register` call
-//! behind the same cfg.
+//! behind the same cfg. Without the default `system-loader` feature it
+//! builds on any target and reaches libva only through a
+//! [`host::HostLoader`] (a process that runs Linux libraries from
+//! another binary format, for example).
 //!
 //! # Status
 //!
@@ -49,19 +52,31 @@
 //! algorithm. The workspace's clean-room rule (no embedding source
 //! from libvpx, libwebp, libjxl, etc.) doesn't apply here.
 
+#[cfg(feature = "av1")]
+pub mod av1;
 pub mod config;
 pub mod context;
+#[cfg(feature = "bitstream")]
 pub mod decoder;
 pub mod display;
 #[cfg(feature = "registry")]
 pub mod engine;
+#[cfg(feature = "h264")]
+pub mod h264;
+#[cfg(feature = "hevc")]
+pub mod hevc;
+pub mod host;
 pub mod profiles;
+pub mod session;
 pub mod sys;
+#[cfg(feature = "vp9")]
+pub mod vp9;
 
 pub use config::Config;
 pub use context::Context;
 #[cfg(feature = "registry")]
 pub use decoder::H264VaCodecDecoder;
+#[cfg(feature = "bitstream")]
 pub use decoder::{DecodedFrame, H264VaDecoder};
 pub use display::{Display, EntrypointMatrix, VaError, VaProfile};
 #[cfg(feature = "registry")]
