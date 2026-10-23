@@ -21,6 +21,9 @@ oxideav-core = { version = "0.1", optional = true }
 # reference picture set / DPB bookkeeping come from the HEVC crate's
 # own parser; the bridge only translates them into VA buffers.
 oxideav-h265 = { version = "0.0.15", optional = true }
+# VP9 decode (`vp9` feature): uncompressed frame headers, loop filter
+# levels and quantizers from the VP9 crate.
+oxideav-vp9 = { version = "0.0.13", optional = true }
 
 # The default `system-loader` feature dlopens libva with dlsym and opens
 # the render node with libc. Without it the crate builds on any target and
@@ -62,3 +65,5 @@ system-loader = ["dep:libc", "dep:dlsym"]
 bitstream = ["dep:oxideav-bitstream"]
 # HEVC decode over oxideav-h265's parser.
 hevc = ["dep:oxideav-h265"]
+# VP9 decode over oxideav-vp9's header parser.
+vp9 = ["dep:oxideav-vp9"]

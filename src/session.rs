@@ -563,3 +563,43 @@ impl Drop for DecodeSession {
         self.destroy();
     }
 }
+
+/// Whether `display`'s driver decodes `profile` (VLD) into `format`
+/// surfaces of `width` x `height`: the profile is listed, its render
+/// target formats include `format`, and the size is within the
+/// driver's maximum picture size where the driver reports one.
+pub fn check_decode(
+    display: &Display,
+    profile: i32,
+    format: SurfaceFormat,
+    width: u32,
+    height: u32,
+) -> Result<(), DecodeError> {
+    use crate::sys::attrib;
+    if !display.is_supported(crate::display::VaProfile(profile), entrypoint::VAEntrypointVLD) {
+        return Err(DecodeError::Unsupported(format!("no VLD for VA profile {profile}")));
+    }
+    let get = |kind| {
+        crate::config::get_attribute(display.raw(), profile, entrypoint::VAEntrypointVLD, kind)
+    };
+    match get(attrib::VAConfigAttribRTFormat) {
+        Ok(Some(rt)) if rt & format.rt_format() != 0 => {}
+        _ => {
+            return Err(DecodeError::Unsupported(format!(
+                "VA profile {profile}: no render target format {:#x}",
+                format.rt_format()
+            )))
+        }
+    }
+    if let Ok(Some(w)) = get(attrib::VAConfigAttribMaxPictureWidth) {
+        if width > w {
+            return Err(DecodeError::Unsupported(format!("width {width} > {w}")));
+        }
+    }
+    if let Ok(Some(h)) = get(attrib::VAConfigAttribMaxPictureHeight) {
+        if height > h {
+            return Err(DecodeError::Unsupported(format!("height {height} > {h}")));
+        }
+    }
+    Ok(())
+}
