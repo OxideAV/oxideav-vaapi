@@ -59,8 +59,11 @@ pub mod decoder;
 pub mod display;
 #[cfg(feature = "registry")]
 pub mod engine;
+#[cfg(feature = "hevc")]
+pub mod hevc;
 pub mod host;
 pub mod profiles;
+pub mod session;
 pub mod sys;
 
 pub use config::Config;

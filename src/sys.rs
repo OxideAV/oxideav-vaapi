@@ -25,6 +25,8 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
+pub mod hevc;
+
 // ─────────────────────────── opaque VA types ──────────────────────────────────
 
 /// VA dispatch handle. Returned by `vaGetDisplayDRM` (or other backend
