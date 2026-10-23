@@ -16,8 +16,9 @@ use std::fmt;
 
 use crate::display::{Display, VaError};
 use crate::sys::{
-    self, entrypoint, error_str, VABufferID, VAConfigID, VAContextID, VAImage, VAImageFormat,
-    VASurfaceID, VA_INVALID_ID, VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_STATUS_SUCCESS,
+    self, VA_INVALID_ID, VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10, VA_STATUS_SUCCESS,
+    VABufferID, VAConfigID, VAContextID, VAImage, VAImageFormat, VASurfaceID, entrypoint,
+    error_str,
 };
 
 /// `VA_FOURCC_P010`.
@@ -289,7 +290,9 @@ impl DecodeSession {
     }
 
     fn dpy(&self) -> sys::VADisplay {
-        self.display.as_ref().map_or(std::ptr::null_mut(), Display::raw)
+        self.display
+            .as_ref()
+            .map_or(std::ptr::null_mut(), Display::raw)
     }
 
     fn destroy(&mut self) {
@@ -304,7 +307,11 @@ impl DecodeSession {
         }
         if !self.surfaces.is_empty() {
             crate::host::native(|| unsafe {
-                (vt.va_destroy_surfaces)(dpy, self.surfaces.as_mut_ptr(), self.surfaces.len() as i32)
+                (vt.va_destroy_surfaces)(
+                    dpy,
+                    self.surfaces.as_mut_ptr(),
+                    self.surfaces.len() as i32,
+                )
             });
             self.surfaces.clear();
         }
@@ -421,24 +428,28 @@ impl DecodeSession {
         height: u32,
         out: &mut Planes<'_>,
     ) -> Result<(), DecodeError> {
-        if x % 2 != 0
-            || y % 2 != 0
+        if !x.is_multiple_of(2)
+            || !y.is_multiple_of(2)
             || width == 0
             || height == 0
-            || x.checked_add(width).map_or(true, |r| r > self.width)
-            || y.checked_add(height).map_or(true, |b| b > self.height)
+            || x.checked_add(width).is_none_or(|r| r > self.width)
+            || y.checked_add(height).is_none_or(|b| b > self.height)
         {
-            return Err(DecodeError::Bitstream("read rectangle outside the surface".into()));
+            return Err(DecodeError::Bitstream(
+                "read rectangle outside the surface".into(),
+            ));
         }
         let row = width as usize * self.format.sample_bytes();
         let chroma_row = ((width as usize + 1) & !1) * self.format.sample_bytes();
-        let chroma_rows = (height as usize + 1) / 2;
+        let chroma_rows = (height as usize).div_ceil(2);
         if out.luma_stride < row
             || out.chroma_stride < chroma_row
             || out.luma.len() < out.luma_stride * (height as usize - 1) + row
             || out.chroma.len() < out.chroma_stride * (chroma_rows - 1) + chroma_row
         {
-            return Err(DecodeError::Bitstream("destination planes too small".into()));
+            return Err(DecodeError::Bitstream(
+                "destination planes too small".into(),
+            ));
         }
         let vt = vtable()?;
         if self.derive_works != Some(false) {
@@ -469,7 +480,8 @@ impl DecodeSession {
         let dpy = self.dpy();
         let mut image = VAImage::zeroed();
         let surface = self.surfaces[slot];
-        let status = crate::host::native(|| unsafe { (vt.va_derive_image)(dpy, surface, &mut image) });
+        let status =
+            crate::host::native(|| unsafe { (vt.va_derive_image)(dpy, surface, &mut image) });
         if status != VA_STATUS_SUCCESS {
             return Err(va_error(vt, "vaDeriveImage", status));
         }
@@ -494,10 +506,20 @@ impl DecodeSession {
         let mut format: VAImageFormat = unsafe { std::mem::zeroed() };
         format.fourcc = self.format.fourcc();
         format.byte_order = 1; // VA_LSB_FIRST
-        format.bits_per_pixel = if self.format == SurfaceFormat::Nv12 { 12 } else { 24 };
+        format.bits_per_pixel = if self.format == SurfaceFormat::Nv12 {
+            12
+        } else {
+            24
+        };
         let mut image = VAImage::zeroed();
         let status = crate::host::native(|| unsafe {
-            (vt.va_create_image)(dpy, &mut format, self.width as i32, self.height as i32, &mut image)
+            (vt.va_create_image)(
+                dpy,
+                &mut format,
+                self.width as i32,
+                self.height as i32,
+                &mut image,
+            )
         });
         if status != VA_STATUS_SUCCESS {
             return Err(va_error(vt, "vaCreateImage", status));
@@ -537,18 +559,21 @@ impl DecodeSession {
         let (lp, cp) = (image.pitches[0] as usize, image.pitches[1] as usize);
         let (lo, co) = (image.offsets[0] as usize, image.offsets[1] as usize);
         let (x, y, h) = (x as usize, y as usize, height as usize);
-        let chroma_rows = (h + 1) / 2;
+        let chroma_rows = h.div_ceil(2);
         let size = image.data_size as usize;
         if lp < (x * sb + row)
             || cp < (x * sb + chroma_row)
             || lo + lp * (y + h - 1) + x * sb + row > size
             || co + cp * (y / 2 + chroma_rows - 1) + x * sb + chroma_row > size
         {
-            return Err(DecodeError::Unsupported("image layout smaller than the surface".into()));
+            return Err(DecodeError::Unsupported(
+                "image layout smaller than the surface".into(),
+            ));
         }
         let dpy = self.dpy();
         let mut data: *mut c_void = std::ptr::null_mut();
-        let status = crate::host::native(|| unsafe { (vt.va_map_buffer)(dpy, image.buf, &mut data) });
+        let status =
+            crate::host::native(|| unsafe { (vt.va_map_buffer)(dpy, image.buf, &mut data) });
         if status != VA_STATUS_SUCCESS || data.is_null() {
             return Err(va_error(vt, "vaMapBuffer", status));
         }
@@ -588,8 +613,13 @@ pub fn check_decode(
     height: u32,
 ) -> Result<(), DecodeError> {
     use crate::sys::attrib;
-    if !display.is_supported(crate::display::VaProfile(profile), entrypoint::VAEntrypointVLD) {
-        return Err(DecodeError::Unsupported(format!("no VLD for VA profile {profile}")));
+    if !display.is_supported(
+        crate::display::VaProfile(profile),
+        entrypoint::VAEntrypointVLD,
+    ) {
+        return Err(DecodeError::Unsupported(format!(
+            "no VLD for VA profile {profile}"
+        )));
     }
     let get = |kind| {
         crate::config::get_attribute(display.raw(), profile, entrypoint::VAEntrypointVLD, kind)
@@ -600,18 +630,18 @@ pub fn check_decode(
             return Err(DecodeError::Unsupported(format!(
                 "VA profile {profile}: no render target format {:#x}",
                 format.rt_format()
-            )))
+            )));
         }
     }
-    if let Ok(Some(w)) = get(attrib::VAConfigAttribMaxPictureWidth) {
-        if width > w {
-            return Err(DecodeError::Unsupported(format!("width {width} > {w}")));
-        }
+    if let Ok(Some(w)) = get(attrib::VAConfigAttribMaxPictureWidth)
+        && width > w
+    {
+        return Err(DecodeError::Unsupported(format!("width {width} > {w}")));
     }
-    if let Ok(Some(h)) = get(attrib::VAConfigAttribMaxPictureHeight) {
-        if height > h {
-            return Err(DecodeError::Unsupported(format!("height {height} > {h}")));
-        }
+    if let Ok(Some(h)) = get(attrib::VAConfigAttribMaxPictureHeight)
+        && height > h
+    {
+        return Err(DecodeError::Unsupported(format!("height {height} > {h}")));
     }
     Ok(())
 }

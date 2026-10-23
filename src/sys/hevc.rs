@@ -4,7 +4,7 @@
 //! are the `u32` storage word, built with the `*_BIT` shifts below
 //! (bit 0 is the first declared field on every libva ABI).
 
-use super::{VASurfaceID, VA_PADDING_LOW, VA_PADDING_MEDIUM};
+use super::{VA_PADDING_LOW, VA_PADDING_MEDIUM, VASurfaceID};
 
 pub const VA_PICTURE_HEVC_INVALID: u32 = 0x01;
 pub const VA_PICTURE_HEVC_FIELD_PIC: u32 = 0x02;

@@ -252,8 +252,11 @@ impl<'d> H264VaDecoder<'d> {
         )?;
 
         // SAFETY: surface and context are valid (we own them).
-        let status =
-            unsafe { crate::host::native(|| (vt.va_begin_picture)(self.dpy_raw, self.context.id(), self.surface())) };
+        let status = unsafe {
+            crate::host::native(|| {
+                (vt.va_begin_picture)(self.dpy_raw, self.context.id(), self.surface())
+            })
+        };
         if status != VA_STATUS_SUCCESS {
             destroy_buffer(self.dpy_raw, slice_data_buf);
             destroy_buffer(self.dpy_raw, slice_param_buf);
@@ -273,17 +276,21 @@ impl<'d> H264VaDecoder<'d> {
             slice_data_buf,
         ];
         let status = unsafe {
-            crate::host::native(|| (vt.va_render_picture)(
-                self.dpy_raw,
-                self.context.id(),
-                buffers.as_mut_ptr(),
-                buffers.len() as i32,
-            ))
+            crate::host::native(|| {
+                (vt.va_render_picture)(
+                    self.dpy_raw,
+                    self.context.id(),
+                    buffers.as_mut_ptr(),
+                    buffers.len() as i32,
+                )
+            })
         };
         if status != VA_STATUS_SUCCESS {
             // End picture even on render error — libva transitions the
             // context state machine on EndPicture.
-            let _ = unsafe { crate::host::native(|| (vt.va_end_picture)(self.dpy_raw, self.context.id())) };
+            let _ = unsafe {
+                crate::host::native(|| (vt.va_end_picture)(self.dpy_raw, self.context.id()))
+            };
             destroy_buffer(self.dpy_raw, slice_data_buf);
             destroy_buffer(self.dpy_raw, slice_param_buf);
             destroy_buffer(self.dpy_raw, iq_matrix_buf);
@@ -295,7 +302,8 @@ impl<'d> H264VaDecoder<'d> {
         }
 
         // SAFETY: matched with begin_picture.
-        let status = unsafe { crate::host::native(|| (vt.va_end_picture)(self.dpy_raw, self.context.id())) };
+        let status =
+            unsafe { crate::host::native(|| (vt.va_end_picture)(self.dpy_raw, self.context.id())) };
         if status != VA_STATUS_SUCCESS {
             destroy_buffer(self.dpy_raw, slice_data_buf);
             destroy_buffer(self.dpy_raw, slice_param_buf);
@@ -308,7 +316,8 @@ impl<'d> H264VaDecoder<'d> {
         }
 
         // SAFETY: surface valid.
-        let status = unsafe { crate::host::native(|| (vt.va_sync_surface)(self.dpy_raw, self.surface())) };
+        let status =
+            unsafe { crate::host::native(|| (vt.va_sync_surface)(self.dpy_raw, self.surface())) };
         if status != VA_STATUS_SUCCESS {
             destroy_buffer(self.dpy_raw, slice_data_buf);
             destroy_buffer(self.dpy_raw, slice_param_buf);
@@ -354,13 +363,15 @@ impl<'d> H264VaDecoder<'d> {
         let mut img: VAImage = VAImage::zeroed();
         // SAFETY: format / image pointers valid; ints sized.
         let status = unsafe {
-            crate::host::native(|| (vt.va_create_image)(
-                self.dpy_raw,
-                &mut nv12_fmt,
-                self.coded_width as i32,
-                self.coded_height as i32,
-                &mut img,
-            ))
+            crate::host::native(|| {
+                (vt.va_create_image)(
+                    self.dpy_raw,
+                    &mut nv12_fmt,
+                    self.coded_width as i32,
+                    self.coded_height as i32,
+                    &mut img,
+                )
+            })
         };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
@@ -371,15 +382,17 @@ impl<'d> H264VaDecoder<'d> {
 
         // SAFETY: image just created, surface valid.
         let status = unsafe {
-            crate::host::native(|| (vt.va_get_image)(
-                self.dpy_raw,
-                self.surface(),
-                0,
-                0,
-                self.coded_width,
-                self.coded_height,
-                img.image_id,
-            ))
+            crate::host::native(|| {
+                (vt.va_get_image)(
+                    self.dpy_raw,
+                    self.surface(),
+                    0,
+                    0,
+                    self.coded_width,
+                    self.coded_height,
+                    img.image_id,
+                )
+            })
         };
         if status != VA_STATUS_SUCCESS {
             // Best-effort cleanup.
@@ -395,7 +408,8 @@ impl<'d> H264VaDecoder<'d> {
         // Map the buffer behind the image.
         let mut p: *mut c_void = std::ptr::null_mut();
         // SAFETY: img.buf is the buffer just allocated by createImage.
-        let status = unsafe { crate::host::native(|| (vt.va_map_buffer)(self.dpy_raw, img.buf, &mut p)) };
+        let status =
+            unsafe { crate::host::native(|| (vt.va_map_buffer)(self.dpy_raw, img.buf, &mut p)) };
         if status != VA_STATUS_SUCCESS {
             unsafe {
                 let _ = crate::host::native(|| (vt.va_destroy_image)(self.dpy_raw, img.image_id));
@@ -412,7 +426,8 @@ impl<'d> H264VaDecoder<'d> {
         // SAFETY: same buffer.
         let _ = unsafe { crate::host::native(|| (vt.va_unmap_buffer)(self.dpy_raw, img.buf)) };
         // SAFETY: same image.
-        let _ = unsafe { crate::host::native(|| (vt.va_destroy_image)(self.dpy_raw, img.image_id)) };
+        let _ =
+            unsafe { crate::host::native(|| (vt.va_destroy_image)(self.dpy_raw, img.image_id)) };
 
         Ok(frame)
     }
@@ -431,7 +446,9 @@ fn create_buffer(
     let mut id: VABufferID = 0;
     // SAFETY: dpy/ctx valid; data points to a `size`-byte allocation
     // owned by the caller.
-    let status = unsafe { crate::host::native(|| (vt.va_create_buffer)(dpy, ctx, buf_type, size, 1, data, &mut id)) };
+    let status = unsafe {
+        crate::host::native(|| (vt.va_create_buffer)(dpy, ctx, buf_type, size, 1, data, &mut id))
+    };
     if status != VA_STATUS_SUCCESS {
         return Err(VaError::Va {
             status,

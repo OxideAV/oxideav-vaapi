@@ -4,7 +4,7 @@
 //! are their storage words, built with the shifts below (bit 0 is the
 //! first declared field on every libva ABI).
 
-use super::{VASurfaceID, VA_PADDING_LOW, VA_PADDING_MEDIUM};
+use super::{VA_PADDING_LOW, VA_PADDING_MEDIUM, VASurfaceID};
 
 /// Bit positions in `seq_info_fields`.
 pub mod seq_info {

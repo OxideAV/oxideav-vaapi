@@ -30,7 +30,7 @@ use oxideav_h265::{
 use crate::display::Display;
 use crate::session::{Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat};
 use crate::sys::hevc::*;
-use crate::sys::{buffer_type, profile, VA_SLICE_DATA_FLAG_ALL};
+use crate::sys::{VA_SLICE_DATA_FLAG_ALL, buffer_type, profile};
 
 const NAL_VPS: u8 = 32;
 const NAL_SPS: u8 = 33;
@@ -136,7 +136,7 @@ impl HevcDecoder {
             return Err(DecodeError::Unsupported("SPS range / SCC extension".into()));
         }
         let (va_profile, format) = match (sps.bit_depth_luma_minus8, sps.bit_depth_chroma_minus8) {
-            (0, 0) if matches!(profile_idc, 1 | 2 | 3) || profile_idc == 0 => {
+            (0, 0) if matches!(profile_idc, 1..=3) || profile_idc == 0 => {
                 (profile::VAProfileHEVCMain, SurfaceFormat::Nv12)
             }
             (0..=2, 0..=2) if matches!(profile_idc, 2) || profile_idc == 0 => {
@@ -147,7 +147,7 @@ impl HevcDecoder {
                     "profile_idc {profile_idc} at {} / {} bits",
                     l + 8,
                     c + 8
-                )))
+                )));
             }
         };
         Ok(HevcRequirements {
@@ -168,10 +168,13 @@ impl HevcDecoder {
             crate::sys::entrypoint::VAEntrypointVLD,
             crate::sys::attrib::VAConfigAttribMaxPictureWidth,
         );
-        if let Ok(Some(w)) = max {
-            if r.coded_width > w {
-                return Err(DecodeError::Unsupported(format!("width {} > {w}", r.coded_width)));
-            }
+        if let Ok(Some(w)) = max
+            && r.coded_width > w
+        {
+            return Err(DecodeError::Unsupported(format!(
+                "width {} > {w}",
+                r.coded_width
+            )));
         }
         let max = crate::config::get_attribute(
             display.raw(),
@@ -179,20 +182,30 @@ impl HevcDecoder {
             crate::sys::entrypoint::VAEntrypointVLD,
             crate::sys::attrib::VAConfigAttribMaxPictureHeight,
         );
-        if let Ok(Some(h)) = max {
-            if r.coded_height > h {
-                return Err(DecodeError::Unsupported(format!("height {} > {h}", r.coded_height)));
-            }
+        if let Ok(Some(h)) = max
+            && r.coded_height > h
+        {
+            return Err(DecodeError::Unsupported(format!(
+                "height {} > {h}",
+                r.coded_height
+            )));
         }
-        if !display.is_supported(crate::display::VaProfile(r.va_profile), crate::sys::entrypoint::VAEntrypointVLD) {
-            return Err(DecodeError::Unsupported(format!("no VLD for VA profile {}", r.va_profile)));
+        if !display.is_supported(
+            crate::display::VaProfile(r.va_profile),
+            crate::sys::entrypoint::VAEntrypointVLD,
+        ) {
+            return Err(DecodeError::Unsupported(format!(
+                "no VLD for VA profile {}",
+                r.va_profile
+            )));
         }
         Ok(())
     }
 
     /// Parse an SPS NAL unit (whole, header included).
     pub fn parse_sps(coded: &[u8]) -> Result<SeqParameterSet, DecodeError> {
-        let nal = nal_unit_from_coded(coded).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?;
+        let nal =
+            nal_unit_from_coded(coded).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?;
         if nal.header.nal_unit_type != NAL_SPS {
             return Err(DecodeError::Bitstream("not an SPS".into()));
         }
@@ -242,7 +255,11 @@ impl HevcDecoder {
     }
 
     /// Copy a returned picture's conformance window into `planes`.
-    pub fn read(&mut self, picture: &HevcPicture, planes: &mut Planes<'_>) -> Result<(), DecodeError> {
+    pub fn read(
+        &mut self,
+        picture: &HevcPicture,
+        planes: &mut Planes<'_>,
+    ) -> Result<(), DecodeError> {
         let session = self
             .session
             .as_mut()
@@ -253,9 +270,12 @@ impl HevcDecoder {
 
     fn push(&mut self, coded: &[u8]) -> Result<(), DecodeError> {
         if coded.len() < 2 {
-            return Err(DecodeError::Bitstream("NAL unit shorter than its header".into()));
+            return Err(DecodeError::Bitstream(
+                "NAL unit shorter than its header".into(),
+            ));
         }
-        let nal = nal_unit_from_coded(coded).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?;
+        let nal =
+            nal_unit_from_coded(coded).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?;
         let h = nal.header;
         if h.nuh_layer_id != 0 {
             return Ok(());
@@ -269,19 +289,17 @@ impl HevcDecoder {
                 self.finish_picture()?;
             }
             let pps_id = peek_pps_id(&nal.rbsp, h.nal_unit_type)?;
-            let pps = self
-                .pps
-                .get(&pps_id)
-                .ok_or_else(|| DecodeError::Bitstream(format!("slice refers to missing PPS {pps_id}")))?;
-            let sps = self
-                .sps
-                .get(&pps.sps_id)
-                .ok_or_else(|| DecodeError::Bitstream(format!("PPS refers to missing SPS {}", pps.sps_id)))?;
+            let pps = self.pps.get(&pps_id).ok_or_else(|| {
+                DecodeError::Bitstream(format!("slice refers to missing PPS {pps_id}"))
+            })?;
+            let sps = self.sps.get(&pps.sps_id).ok_or_else(|| {
+                DecodeError::Bitstream(format!("PPS refers to missing SPS {}", pps.sps_id))
+            })?;
             let header = SliceSegmentHeader::parse(&nal.rbsp, h.nal_unit_type, sps, pps)
                 .map_err(|e| DecodeError::Bitstream(format!("slice header: {e:?}")))?;
-            let header_bytes = header
-                .byte_offset_to_slice_data
-                .ok_or_else(|| DecodeError::Bitstream("slice header not parsed to its end".into()))?;
+            let header_bytes = header.byte_offset_to_slice_data.ok_or_else(|| {
+                DecodeError::Bitstream("slice header not parsed to its end".into())
+            })?;
             let header_emulation = emulation_bytes(&nal.escaped, header_bytes);
             let st_rps_bits = if header.short_term_ref_pic_set_sps_flag == Some(false) {
                 header
@@ -336,28 +354,49 @@ impl HevcDecoder {
 
     /// Make sure the session matches `sps`; a new size, format or
     /// profile starts over (only at an IRAP with NoRaslOutputFlag).
-    fn ensure_session(&mut self, sps: &SeqParameterSet, irap_restart: bool) -> Result<(), DecodeError> {
+    fn ensure_session(
+        &mut self,
+        sps: &SeqParameterSet,
+        irap_restart: bool,
+    ) -> Result<(), DecodeError> {
         let r = Self::requirements(sps)?;
-        let dpb = sps.sub_layer_ordering_info[usize::from(sps.max_sub_layers_minus1)
-            .min(sps.sub_layer_ordering_info.len() - 1)]
+        let dpb = sps.sub_layer_ordering_info
+            [usize::from(sps.max_sub_layers_minus1).min(sps.sub_layer_ordering_info.len() - 1)]
         .max_dec_pic_buffering_minus1 as usize
             + 1;
         let count = (dpb + 2).min(18);
-        if self.requirements == Some(r) && self.session.as_ref().is_some_and(|s| s.surface_count() >= count) {
+        if self.requirements == Some(r)
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|s| s.surface_count() >= count)
+        {
             return Ok(());
         }
         if self.session.is_some() && !irap_restart {
-            return Err(DecodeError::Bitstream("sequence change without an IRAP picture".into()));
+            return Err(DecodeError::Bitstream(
+                "sequence change without an IRAP picture".into(),
+            ));
         }
         let display = match self.session.take() {
             Some(s) => s.into_display(),
-            None => self.display.take().ok_or_else(|| DecodeError::Bitstream("decoder lost its display".into()))?,
+            None => self
+                .display
+                .take()
+                .ok_or_else(|| DecodeError::Bitstream("decoder lost its display".into()))?,
         };
         self.state = PictureSequenceState::new();
         self.dpb_slots.clear();
         self.returned_only = None;
         self.requirements = None;
-        match DecodeSession::new(display, r.va_profile, r.format, r.coded_width, r.coded_height, count) {
+        match DecodeSession::new(
+            display,
+            r.va_profile,
+            r.format,
+            r.coded_width,
+            r.coded_height,
+            count,
+        ) {
             Ok(s) => {
                 self.session = Some(s);
                 self.requirements = Some(r);
@@ -373,7 +412,9 @@ impl HevcDecoder {
     fn decode_picture(&mut self, segs: &[Segment]) -> Result<(), DecodeError> {
         let indep = &segs[0];
         if indep.header.dependent_slice_segment_flag {
-            return Err(DecodeError::Bitstream("picture starts with a dependent slice segment".into()));
+            return Err(DecodeError::Bitstream(
+                "picture starts with a dependent slice segment".into(),
+            ));
         }
         let pps = self
             .pps
@@ -385,11 +426,17 @@ impl HevcDecoder {
             .get(&pps.sps_id)
             .cloned()
             .ok_or_else(|| DecodeError::Bitstream("missing SPS".into()))?;
-        if pps.pps_range_extension.is_some() || pps.pps_scc_extension.is_some() || pps.pps_multilayer_extension.is_some() {
-            return Err(DecodeError::Unsupported("PPS range / SCC / multi-layer extension".into()));
+        if pps.pps_range_extension.is_some()
+            || pps.pps_scc_extension.is_some()
+            || pps.pps_multilayer_extension.is_some()
+        {
+            return Err(DecodeError::Unsupported(
+                "PPS range / SCC / multi-layer extension".into(),
+            ));
         }
         let nal_kind = NalKind::new(indep.nal_type);
-        let no_rasl_output = nal_kind.is_idr() || nal_kind.is_bla() || (nal_kind.is_irap() && !self.seen_picture);
+        let no_rasl_output =
+            nal_kind.is_idr() || nal_kind.is_bla() || (nal_kind.is_irap() && !self.seen_picture);
         if nal_kind.is_irap() {
             self.skip_rasl = no_rasl_output;
         }
@@ -398,7 +445,9 @@ impl HevcDecoder {
             return Ok(());
         }
         if !nal_kind.is_irap() && self.session.is_none() {
-            return Err(DecodeError::Bitstream("stream does not start with an IRAP picture".into()));
+            return Err(DecodeError::Bitstream(
+                "stream does not start with an IRAP picture".into(),
+            ));
         }
         self.ensure_session(&sps, nal_kind.is_irap() && no_rasl_output)?;
         self.seen_picture = true;
@@ -427,23 +476,31 @@ impl HevcDecoder {
         let rps = ref_state.rps.clone();
         for list in [&rps.st_curr_before, &rps.st_curr_after, &rps.lt_curr] {
             if list.iter().any(Option::is_none) {
-                return Err(DecodeError::Bitstream("reference picture missing from the DPB".into()));
+                return Err(DecodeError::Bitstream(
+                    "reference picture missing from the DPB".into(),
+                ));
             }
         }
         // Entries the RPS just marked unused are not referenced by this
         // picture or any later one: their surfaces go back now.
-        for (e, slot) in self.state.dpb().entries().iter().zip(self.dpb_slots.iter_mut()) {
-            if e.marking == Marking::Unused {
-                if let (Some(s), Some(session)) = (slot.take(), self.session.as_mut()) {
-                    session.release(s);
-                }
+        for (e, slot) in self
+            .state
+            .dpb()
+            .entries()
+            .iter()
+            .zip(self.dpb_slots.iter_mut())
+        {
+            if e.marking == Marking::Unused
+                && let (Some(s), Some(session)) = (slot.take(), self.session.as_mut())
+            {
+                session.release(s);
             }
         }
 
         let session = self.session.as_mut().expect("session ensured");
-        let target = session
-            .acquire()
-            .ok_or_else(|| DecodeError::Bitstream("more pictures held than the DPB allows".into()))?;
+        let target = session.acquire().ok_or_else(|| {
+            DecodeError::Bitstream("more pictures held than the DPB allows".into())
+        })?;
         let poc = ref_state.poc.val;
 
         // ReferenceFrames[]: every picture still marked for reference.
@@ -460,10 +517,14 @@ impl HevcDecoder {
             if e.marking == Marking::Unused {
                 continue;
             }
-            let Some(slot) = self.dpb_slots[i] else { continue };
+            let Some(slot) = self.dpb_slots[i] else {
+                continue;
+            };
             if n == 15 {
                 session.release(target);
-                return Err(DecodeError::Bitstream("more than 15 reference pictures".into()));
+                return Err(DecodeError::Bitstream(
+                    "more than 15 reference pictures".into(),
+                ));
             }
             let mut flags = 0;
             if e.marking == Marking::LongTerm {
@@ -491,17 +552,17 @@ impl HevcDecoder {
         let mut last_indep: Option<VASliceParameterBufferHEVC> = None;
         for (k, seg) in segs.iter().enumerate() {
             let mut sp = if seg.header.dependent_slice_segment_flag {
-                let mut base = last_indep
-                    .ok_or_else(|| DecodeError::Bitstream("dependent slice segment first".into()))?;
+                let mut base = last_indep.ok_or_else(|| {
+                    DecodeError::Bitstream("dependent slice segment first".into())
+                })?;
                 base.long_slice_flags |= 1 << long_slice_flags::DEPENDENT_SLICE_SEGMENT;
                 base.long_slice_flags &= !(1 << long_slice_flags::LAST_SLICE_OF_PIC);
                 base.num_entry_point_offsets = 0;
                 base
             } else {
-                let st = seg
-                    .header
-                    .slice_type
-                    .ok_or_else(|| DecodeError::Bitstream("independent slice without a type".into()))?;
+                let st = seg.header.slice_type.ok_or_else(|| {
+                    DecodeError::Bitstream("independent slice without a type".into())
+                })?;
                 let refs = slice_ref_params(&seg.header, &pps, st, &info);
                 let lists = refs.is_inter.then(|| {
                     self.state.dpb().build_ref_pic_lists(
@@ -546,9 +607,14 @@ impl HevcDecoder {
         }
         for (sp, seg) in slices.iter().zip(segs) {
             buffers.push(Buffer::of(buffer_type::VASliceParameterBufferType, sp));
-            buffers.push(Buffer::bytes(buffer_type::VASliceDataBufferType, &seg.coded));
+            buffers.push(Buffer::bytes(
+                buffer_type::VASliceDataBufferType,
+                &seg.coded,
+            ));
         }
-        let submitted = session.submit(target, &buffers).and_then(|()| session.sync(target));
+        let submitted = session
+            .submit(target, &buffers)
+            .and_then(|()| session.sync(target));
         if let Err(e) = submitted {
             session.release(target);
             return Err(e);
@@ -561,8 +627,12 @@ impl HevcDecoder {
         .max_dec_pic_buffering_minus1
             > 0;
         if referenceable {
-            self.state
-                .store_picture(ref_state.poc, 0, Picture::new(8, 8, 1, 8, 8), MotionField::new(8, 8));
+            self.state.store_picture(
+                ref_state.poc,
+                0,
+                Picture::new(8, 8, 1, 8, 8),
+                MotionField::new(8, 8),
+            );
             self.dpb_slots.push(Some(target));
         } else {
             self.returned_only = Some(target);
@@ -596,7 +666,9 @@ fn peek_pps_id(rbsp: &[u8], nal_unit_type: u8) -> Result<u8, DecodeError> {
     }
     let id = r.ue().map_err(bad)?;
     if id > 63 {
-        return Err(DecodeError::Bitstream("slice_pic_parameter_set_id > 63".into()));
+        return Err(DecodeError::Bitstream(
+            "slice_pic_parameter_set_id > 63".into(),
+        ));
     }
     Ok(id as u8)
 }
@@ -638,13 +710,24 @@ fn st_rps_bits(s: &ShortTermRefPicSet, num_sets: u32) -> u32 {
         }
     } else {
         bits += ue_bits(s.num_negative_pics) + ue_bits(s.num_positive_pics);
-        bits += s.delta_poc_s0_minus1.iter().map(|&d| ue_bits(d) + 1).sum::<u32>();
-        bits += s.delta_poc_s1_minus1.iter().map(|&d| ue_bits(d) + 1).sum::<u32>();
+        bits += s
+            .delta_poc_s0_minus1
+            .iter()
+            .map(|&d| ue_bits(d) + 1)
+            .sum::<u32>();
+        bits += s
+            .delta_poc_s1_minus1
+            .iter()
+            .map(|&d| ue_bits(d) + 1)
+            .sum::<u32>();
     }
     bits
 }
 
-fn materialize_rps(header: &SliceSegmentHeader, sps: &SeqParameterSet) -> Result<MaterializedShortTermRefPicSet, DecodeError> {
+fn materialize_rps(
+    header: &SliceSegmentHeader,
+    sps: &SeqParameterSet,
+) -> Result<MaterializedShortTermRefPicSet, DecodeError> {
     let bad = |m: &str| DecodeError::Bitstream(m.into());
     let Some(sps_flag) = header.short_term_ref_pic_set_sps_flag else {
         return Ok(MaterializedShortTermRefPicSet {
@@ -654,32 +737,53 @@ fn materialize_rps(header: &SliceSegmentHeader, sps: &SeqParameterSet) -> Result
             used_by_curr_pic_s1: Vec::new(),
         });
     };
-    let mut chain: Vec<MaterializedShortTermRefPicSet> = Vec::with_capacity(sps.short_term_ref_pic_sets.len());
+    let mut chain: Vec<MaterializedShortTermRefPicSet> =
+        Vec::with_capacity(sps.short_term_ref_pic_sets.len());
     for (idx, set) in sps.short_term_ref_pic_sets.iter().enumerate() {
         let source = if set.inter_ref_pic_set_prediction_flag {
-            let r = idx.checked_sub(set.delta_idx_minus1 as usize + 1).ok_or_else(|| bad("RefRpsIdx underflow"))?;
+            let r = idx
+                .checked_sub(set.delta_idx_minus1 as usize + 1)
+                .ok_or_else(|| bad("RefRpsIdx underflow"))?;
             Some(&chain[r])
         } else {
             None
         };
-        chain.push(set.materialize(source).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?);
+        chain.push(
+            set.materialize(source)
+                .map_err(|e| DecodeError::Bitstream(format!("{e:?}")))?,
+        );
     }
     if sps_flag {
         let idx = header.short_term_ref_pic_set_idx.unwrap_or(0) as usize;
-        chain.into_iter().nth(idx).ok_or_else(|| bad("short_term_ref_pic_set_idx out of range"))
+        chain
+            .into_iter()
+            .nth(idx)
+            .ok_or_else(|| bad("short_term_ref_pic_set_idx out of range"))
     } else {
-        let set = header.inline_short_term_ref_pic_set.as_ref().ok_or_else(|| bad("missing st_ref_pic_set"))?;
+        let set = header
+            .inline_short_term_ref_pic_set
+            .as_ref()
+            .ok_or_else(|| bad("missing st_ref_pic_set"))?;
         let source = if set.inter_ref_pic_set_prediction_flag {
-            let r = chain.len().checked_sub(set.delta_idx_minus1 as usize + 1).ok_or_else(|| bad("RefRpsIdx underflow"))?;
+            let r = chain
+                .len()
+                .checked_sub(set.delta_idx_minus1 as usize + 1)
+                .ok_or_else(|| bad("RefRpsIdx underflow"))?;
             Some(&chain[r])
         } else {
             None
         };
-        set.materialize(source).map_err(|e| DecodeError::Bitstream(format!("{e:?}")))
+        set.materialize(source)
+            .map_err(|e| DecodeError::Bitstream(format!("{e:?}")))
     }
 }
 
-fn header_info(seg: &Segment, sps: &SeqParameterSet, nal_kind: NalKind, no_rasl_output: bool) -> Result<PictureHeaderInfo, DecodeError> {
+fn header_info(
+    seg: &Segment,
+    sps: &SeqParameterSet,
+    nal_kind: NalKind,
+    no_rasl_output: bool,
+) -> Result<PictureHeaderInfo, DecodeError> {
     let max_poc_lsb = 1u32 << (sps.log2_max_pic_order_cnt_lsb_minus4 + 4);
     let short_term_rps = materialize_rps(&seg.header, sps)?;
     let mut long_term = Vec::new();
@@ -724,7 +828,12 @@ fn header_info(seg: &Segment, sps: &SeqParameterSet, nal_kind: NalKind, no_rasl_
     })
 }
 
-fn slice_ref_params(header: &SliceSegmentHeader, pps: &PicParameterSet, slice_type: SliceType, info: &PictureHeaderInfo) -> SliceRefParams {
+fn slice_ref_params(
+    header: &SliceSegmentHeader,
+    pps: &PicParameterSet,
+    slice_type: SliceType,
+    info: &PictureHeaderInfo,
+) -> SliceRefParams {
     let st = info
         .short_term_rps
         .used_by_curr_pic_s0
@@ -732,15 +841,23 @@ fn slice_ref_params(header: &SliceSegmentHeader, pps: &PicParameterSet, slice_ty
         .chain(info.short_term_rps.used_by_curr_pic_s1.iter())
         .filter(|&&u| u)
         .count();
-    let lt = info.long_term.iter().filter(|e| e.used_by_curr_pic_lt).count();
+    let lt = info
+        .long_term
+        .iter()
+        .filter(|e| e.used_by_curr_pic_lt)
+        .count();
     SliceRefParams {
         is_inter: slice_type != SliceType::I,
         is_b: slice_type == SliceType::B,
         num_ref_idx_l0_active_minus1: u32::from(
-            header.num_ref_idx_l0_active_minus1.unwrap_or(pps.num_ref_idx_l0_default_active_minus1),
+            header
+                .num_ref_idx_l0_active_minus1
+                .unwrap_or(pps.num_ref_idx_l0_default_active_minus1),
         ),
         num_ref_idx_l1_active_minus1: u32::from(
-            header.num_ref_idx_l1_active_minus1.unwrap_or(pps.num_ref_idx_l1_default_active_minus1),
+            header
+                .num_ref_idx_l1_active_minus1
+                .unwrap_or(pps.num_ref_idx_l1_default_active_minus1),
         ),
         num_pic_total_curr: (st + lt) as u32,
         temporal_mvp_enabled: header.slice_temporal_mvp_enabled_flag,
@@ -787,10 +904,12 @@ fn picture_parameters(
     let sub = &sps.sub_layer_ordering_info
         [usize::from(sps.max_sub_layers_minus1).min(sps.sub_layer_ordering_info.len() - 1)];
     let pcm = sps.pcm;
-    let intra = segs
+    let intra = segs.iter().all(|s| {
+        s.header.dependent_slice_segment_flag || s.header.slice_type == Some(SliceType::I)
+    });
+    let no_b = segs
         .iter()
-        .all(|s| s.header.dependent_slice_segment_flag || s.header.slice_type == Some(SliceType::I));
-    let no_b = segs.iter().all(|s| s.header.slice_type != Some(SliceType::B));
+        .all(|s| s.header.slice_type != Some(SliceType::B));
     use pic_fields as pf;
     use slice_parsing_fields as sf;
     let pic_fields = u32::from(sps.chroma_format_idc) << pf::CHROMA_FORMAT_IDC
@@ -799,39 +918,90 @@ fn picture_parameters(
         | bit(sps.scaling_list_enabled_flag, pf::SCALING_LIST_ENABLED)
         | bit(pps.transform_skip_enabled_flag, pf::TRANSFORM_SKIP_ENABLED)
         | bit(sps.amp_enabled_flag, pf::AMP_ENABLED)
-        | bit(sps.strong_intra_smoothing_enabled_flag, pf::STRONG_INTRA_SMOOTHING_ENABLED)
-        | bit(pps.sign_data_hiding_enabled_flag, pf::SIGN_DATA_HIDING_ENABLED)
+        | bit(
+            sps.strong_intra_smoothing_enabled_flag,
+            pf::STRONG_INTRA_SMOOTHING_ENABLED,
+        )
+        | bit(
+            pps.sign_data_hiding_enabled_flag,
+            pf::SIGN_DATA_HIDING_ENABLED,
+        )
         | bit(pps.constrained_intra_pred_flag, pf::CONSTRAINED_INTRA_PRED)
         | bit(pps.cu_qp_delta_enabled_flag, pf::CU_QP_DELTA_ENABLED)
         | bit(pps.weighted_pred_flag, pf::WEIGHTED_PRED)
         | bit(pps.weighted_bipred_flag, pf::WEIGHTED_BIPRED)
-        | bit(pps.transquant_bypass_enabled_flag, pf::TRANSQUANT_BYPASS_ENABLED)
+        | bit(
+            pps.transquant_bypass_enabled_flag,
+            pf::TRANSQUANT_BYPASS_ENABLED,
+        )
         | bit(pps.tiles_enabled_flag, pf::TILES_ENABLED)
-        | bit(pps.entropy_coding_sync_enabled_flag, pf::ENTROPY_CODING_SYNC_ENABLED)
-        | bit(pps.pps_loop_filter_across_slices_enabled_flag, pf::PPS_LOOP_FILTER_ACROSS_SLICES_ENABLED)
-        | bit(pps.loop_filter_across_tiles_enabled_flag, pf::LOOP_FILTER_ACROSS_TILES_ENABLED)
-        | bit(pcm.is_some_and(|p| p.loop_filter_disabled_flag), pf::PCM_LOOP_FILTER_DISABLED)
+        | bit(
+            pps.entropy_coding_sync_enabled_flag,
+            pf::ENTROPY_CODING_SYNC_ENABLED,
+        )
+        | bit(
+            pps.pps_loop_filter_across_slices_enabled_flag,
+            pf::PPS_LOOP_FILTER_ACROSS_SLICES_ENABLED,
+        )
+        | bit(
+            pps.loop_filter_across_tiles_enabled_flag,
+            pf::LOOP_FILTER_ACROSS_TILES_ENABLED,
+        )
+        | bit(
+            pcm.is_some_and(|p| p.loop_filter_disabled_flag),
+            pf::PCM_LOOP_FILTER_DISABLED,
+        )
         | bit(sub.max_num_reorder_pics == 0, pf::NO_PIC_REORDERING)
         | bit(no_b, pf::NO_BI_PRED);
-    let slice_parsing_fields = bit(pps.lists_modification_present_flag, sf::LISTS_MODIFICATION_PRESENT)
-        | bit(sps.long_term_ref_pics_present_flag, sf::LONG_TERM_REF_PICS_PRESENT)
-        | bit(sps.sps_temporal_mvp_enabled_flag, sf::SPS_TEMPORAL_MVP_ENABLED)
-        | bit(pps.cabac_init_present_flag, sf::CABAC_INIT_PRESENT)
+    let slice_parsing_fields = bit(
+        pps.lists_modification_present_flag,
+        sf::LISTS_MODIFICATION_PRESENT,
+    ) | bit(
+        sps.long_term_ref_pics_present_flag,
+        sf::LONG_TERM_REF_PICS_PRESENT,
+    ) | bit(
+        sps.sps_temporal_mvp_enabled_flag,
+        sf::SPS_TEMPORAL_MVP_ENABLED,
+    ) | bit(pps.cabac_init_present_flag, sf::CABAC_INIT_PRESENT)
         | bit(pps.output_flag_present_flag, sf::OUTPUT_FLAG_PRESENT)
-        | bit(pps.dependent_slice_segments_enabled_flag, sf::DEPENDENT_SLICE_SEGMENTS_ENABLED)
-        | bit(pps.pps_slice_chroma_qp_offsets_present_flag, sf::PPS_SLICE_CHROMA_QP_OFFSETS_PRESENT)
-        | bit(sps.sample_adaptive_offset_enabled_flag, sf::SAMPLE_ADAPTIVE_OFFSET_ENABLED)
-        | bit(pps.deblocking.override_enabled_flag, sf::DEBLOCKING_FILTER_OVERRIDE_ENABLED)
-        | bit(pps.deblocking.disabled_flag, sf::PPS_DISABLE_DEBLOCKING_FILTER)
-        | bit(pps.slice_segment_header_extension_present_flag, sf::SLICE_SEGMENT_HEADER_EXTENSION_PRESENT)
+        | bit(
+            pps.dependent_slice_segments_enabled_flag,
+            sf::DEPENDENT_SLICE_SEGMENTS_ENABLED,
+        )
+        | bit(
+            pps.pps_slice_chroma_qp_offsets_present_flag,
+            sf::PPS_SLICE_CHROMA_QP_OFFSETS_PRESENT,
+        )
+        | bit(
+            sps.sample_adaptive_offset_enabled_flag,
+            sf::SAMPLE_ADAPTIVE_OFFSET_ENABLED,
+        )
+        | bit(
+            pps.deblocking.override_enabled_flag,
+            sf::DEBLOCKING_FILTER_OVERRIDE_ENABLED,
+        )
+        | bit(
+            pps.deblocking.disabled_flag,
+            sf::PPS_DISABLE_DEBLOCKING_FILTER,
+        )
+        | bit(
+            pps.slice_segment_header_extension_present_flag,
+            sf::SLICE_SEGMENT_HEADER_EXTENSION_PRESENT,
+        )
         | bit(nal_kind.is_irap(), sf::RAP_PIC)
         | bit(nal_kind.is_idr(), sf::IDR_PIC)
         | bit(intra, sf::INTRA_PIC);
-    let ctb = 1u32 << (sps.log2_min_luma_coding_block_size_minus3 + 3 + sps.log2_diff_max_min_luma_coding_block_size);
+    let ctb = 1u32
+        << (sps.log2_min_luma_coding_block_size_minus3
+            + 3
+            + sps.log2_diff_max_min_luma_coding_block_size);
     let w_ctbs = sps.pic_width_in_luma_samples.div_ceil(ctb);
     let h_ctbs = sps.pic_height_in_luma_samples.div_ceil(ctb);
     let (cols, rows) = if pps.tiles_enabled_flag {
-        (pps.tiles.num_tile_columns_minus1, pps.tiles.num_tile_rows_minus1)
+        (
+            pps.tiles.num_tile_columns_minus1,
+            pps.tiles.num_tile_rows_minus1,
+        )
     } else {
         (0, 0)
     };
@@ -840,10 +1010,26 @@ fn picture_parameters(
     }
     let mut column_width_minus1 = [0u16; 19];
     let mut row_height_minus1 = [0u16; 21];
-    for (i, v) in tile_sizes(cols, pps.tiles.uniform_spacing_flag, &pps.tiles.column_width_minus1, w_ctbs).into_iter().enumerate() {
+    for (i, v) in tile_sizes(
+        cols,
+        pps.tiles.uniform_spacing_flag,
+        &pps.tiles.column_width_minus1,
+        w_ctbs,
+    )
+    .into_iter()
+    .enumerate()
+    {
         column_width_minus1[i] = v;
     }
-    for (i, v) in tile_sizes(rows, pps.tiles.uniform_spacing_flag, &pps.tiles.row_height_minus1, h_ctbs).into_iter().enumerate() {
+    for (i, v) in tile_sizes(
+        rows,
+        pps.tiles.uniform_spacing_flag,
+        &pps.tiles.row_height_minus1,
+        h_ctbs,
+    )
+    .into_iter()
+    .enumerate()
+    {
         row_height_minus1[i] = v;
     }
     Ok(VAPictureParameterBufferHEVC {
@@ -861,8 +1047,10 @@ fn picture_parameters(
         log2_diff_max_min_luma_coding_block_size: sps.log2_diff_max_min_luma_coding_block_size,
         log2_min_transform_block_size_minus2: sps.log2_min_luma_transform_block_size_minus2,
         log2_diff_max_min_transform_block_size: sps.log2_diff_max_min_luma_transform_block_size,
-        log2_min_pcm_luma_coding_block_size_minus3: pcm.map_or(0, |p| p.log2_min_pcm_luma_coding_block_size_minus3),
-        log2_diff_max_min_pcm_luma_coding_block_size: pcm.map_or(0, |p| p.log2_diff_max_min_pcm_luma_coding_block_size),
+        log2_min_pcm_luma_coding_block_size_minus3: pcm
+            .map_or(0, |p| p.log2_min_pcm_luma_coding_block_size_minus3),
+        log2_diff_max_min_pcm_luma_coding_block_size: pcm
+            .map_or(0, |p| p.log2_diff_max_min_pcm_luma_coding_block_size),
         max_transform_hierarchy_depth_intra: sps.max_transform_hierarchy_depth_intra,
         max_transform_hierarchy_depth_inter: sps.max_transform_hierarchy_depth_inter,
         init_qp_minus26: pps.init_qp_minus26 as i8,
@@ -937,13 +1125,33 @@ fn iq_matrix(sps: &SeqParameterSet, pps: &PicParameterSet) -> Option<VAIQMatrixB
         va_reserved: [0; 4],
     };
     for id in 0..6 {
-        raster(&data.lists[0][id].coef, &scan4, 4, &mut m.scaling_list_4x4[id]);
-        raster(&data.lists[1][id].coef, &scan8, 8, &mut m.scaling_list_8x8[id]);
-        raster(&data.lists[2][id].coef, &scan8, 8, &mut m.scaling_list_16x16[id]);
+        raster(
+            &data.lists[0][id].coef,
+            &scan4,
+            4,
+            &mut m.scaling_list_4x4[id],
+        );
+        raster(
+            &data.lists[1][id].coef,
+            &scan8,
+            8,
+            &mut m.scaling_list_8x8[id],
+        );
+        raster(
+            &data.lists[2][id].coef,
+            &scan8,
+            8,
+            &mut m.scaling_list_16x16[id],
+        );
         m.scaling_list_dc_16x16[id] = data.lists[2][id].dc_coef as u8;
     }
     for (k, id) in [0usize, 3].into_iter().enumerate() {
-        raster(&data.lists[3][id].coef, &scan8, 8, &mut m.scaling_list_32x32[k]);
+        raster(
+            &data.lists[3][id].coef,
+            &scan8,
+            8,
+            &mut m.scaling_list_32x32[k],
+        );
         m.scaling_list_dc_32x32[k] = data.lists[3][id].dc_coef as u8;
     }
     Some(m)
@@ -965,8 +1173,16 @@ fn slice_parameters(
                     Some(idx) => *frame_of_entry
                         .get(*idx)
                         .filter(|&&f| f != 0xFF)
-                        .ok_or_else(|| DecodeError::Bitstream("reference list names a picture outside the DPB".into()))?,
-                    None => return Err(DecodeError::Bitstream("reference list entry missing".into())),
+                        .ok_or_else(|| {
+                            DecodeError::Bitstream(
+                                "reference list names a picture outside the DPB".into(),
+                            )
+                        })?,
+                    None => {
+                        return Err(DecodeError::Bitstream(
+                            "reference list entry missing".into(),
+                        ));
+                    }
                 };
             }
             Ok(())
@@ -981,13 +1197,17 @@ fn slice_parameters(
         SliceType::P => 1,
         SliceType::I => 2,
     };
-    let deblocking_disabled = h.deblocking.as_ref().map_or(pps.deblocking.disabled_flag, |d| d.disabled_flag);
-    let (beta, tc) = h
+    let deblocking_disabled = h
         .deblocking
         .as_ref()
-        .map_or((pps.deblocking.beta_offset_div2, pps.deblocking.tc_offset_div2), |d| {
-            (d.beta_offset_div2, d.tc_offset_div2)
-        });
+        .map_or(pps.deblocking.disabled_flag, |d| d.disabled_flag);
+    let (beta, tc) = h.deblocking.as_ref().map_or(
+        (
+            pps.deblocking.beta_offset_div2,
+            pps.deblocking.tc_offset_div2,
+        ),
+        |d| (d.beta_offset_div2, d.tc_offset_div2),
+    );
     let across = h
         .slice_loop_filter_across_slices_enabled_flag
         .unwrap_or(pps.pps_loop_filter_across_slices_enabled_flag);
@@ -997,9 +1217,15 @@ fn slice_parameters(
         | bit(h.slice_sao_chroma_flag, lf::SLICE_SAO_CHROMA)
         | bit(h.mvd_l1_zero_flag.unwrap_or(false), lf::MVD_L1_ZERO)
         | bit(h.cabac_init_flag.unwrap_or(false), lf::CABAC_INIT)
-        | bit(h.slice_temporal_mvp_enabled_flag, lf::SLICE_TEMPORAL_MVP_ENABLED)
+        | bit(
+            h.slice_temporal_mvp_enabled_flag,
+            lf::SLICE_TEMPORAL_MVP_ENABLED,
+        )
         | bit(deblocking_disabled, lf::SLICE_DEBLOCKING_FILTER_DISABLED)
-        | bit(h.collocated_from_l0_flag.unwrap_or(true), lf::COLLOCATED_FROM_L0)
+        | bit(
+            h.collocated_from_l0_flag.unwrap_or(true),
+            lf::COLLOCATED_FROM_L0,
+        )
         | bit(across, lf::SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED);
     let inter = slice_type != SliceType::I;
     let mut sp = VASliceParameterBufferHEVC {
@@ -1016,12 +1242,14 @@ fn slice_parameters(
             0xFF
         },
         num_ref_idx_l0_active_minus1: if inter {
-            h.num_ref_idx_l0_active_minus1.unwrap_or(pps.num_ref_idx_l0_default_active_minus1)
+            h.num_ref_idx_l0_active_minus1
+                .unwrap_or(pps.num_ref_idx_l0_default_active_minus1)
         } else {
             0
         },
         num_ref_idx_l1_active_minus1: if slice_type == SliceType::B {
-            h.num_ref_idx_l1_active_minus1.unwrap_or(pps.num_ref_idx_l1_default_active_minus1)
+            h.num_ref_idx_l1_active_minus1
+                .unwrap_or(pps.num_ref_idx_l1_default_active_minus1)
         } else {
             0
         },
@@ -1048,7 +1276,8 @@ fn slice_parameters(
     };
     if let Some(pwt) = &h.pred_weight_table {
         let luma_denom = u32::from(pwt.luma_log2_weight_denom);
-        let chroma_denom = (luma_denom as i32 + pwt.delta_chroma_log2_weight_denom).clamp(0, 7) as u32;
+        let chroma_denom =
+            (luma_denom as i32 + pwt.delta_chroma_log2_weight_denom).clamp(0, 7) as u32;
         sp.luma_log2_weight_denom = pwt.luma_log2_weight_denom;
         sp.delta_chroma_log2_weight_denom = pwt.delta_chroma_log2_weight_denom as i8;
         // §7.4.7.3, eq. 7-56 (high_precision_offsets_enabled_flag is 0 here).
@@ -1067,14 +1296,28 @@ fn slice_parameters(
                     for j in 0..2 {
                         dcw[i][j] = e.delta_chroma_weight[j] as i8;
                         let weight = (1i32 << chroma_denom) + e.delta_chroma_weight[j];
-                        let offset = (half - ((half * weight) >> chroma_denom) + e.delta_chroma_offset[j]).clamp(-half, half - 1);
+                        let offset = (half - ((half * weight) >> chroma_denom)
+                            + e.delta_chroma_offset[j])
+                            .clamp(-half, half - 1);
                         co[i][j] = offset as i8;
                     }
                 }
             }
         };
-        fill(&pwt.entries_l0, &mut sp.delta_luma_weight_l0, &mut sp.luma_offset_l0, &mut sp.delta_chroma_weight_l0, &mut sp.chroma_offset_l0);
-        fill(&pwt.entries_l1, &mut sp.delta_luma_weight_l1, &mut sp.luma_offset_l1, &mut sp.delta_chroma_weight_l1, &mut sp.chroma_offset_l1);
+        fill(
+            &pwt.entries_l0,
+            &mut sp.delta_luma_weight_l0,
+            &mut sp.luma_offset_l0,
+            &mut sp.delta_chroma_weight_l0,
+            &mut sp.chroma_offset_l0,
+        );
+        fill(
+            &pwt.entries_l1,
+            &mut sp.delta_luma_weight_l1,
+            &mut sp.luma_offset_l1,
+            &mut sp.delta_chroma_weight_l1,
+            &mut sp.chroma_offset_l1,
+        );
     }
     Ok(sp)
 }

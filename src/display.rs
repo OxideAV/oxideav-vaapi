@@ -167,10 +167,10 @@ impl Display {
             (vt.open)(cpath.as_ptr() as *const c_char, sys::O_RDWR_CLOEXEC)
         });
         if fd < 0 {
-            return Err(VaError::OpenDrm(io::Error::new(
-                io::ErrorKind::Other,
-                format!("cannot open {}", path.display()),
-            )));
+            return Err(VaError::OpenDrm(io::Error::other(format!(
+                "cannot open {}",
+                path.display()
+            ))));
         }
 
         // SAFETY: `fd` is a valid open file descriptor; libva-drm's
@@ -187,7 +187,8 @@ impl Display {
         let mut minor: i32 = 0;
         // SAFETY: `dpy` non-null, `&mut` outlives the call. libva
         // writes the negotiated API version on success.
-        let status = unsafe { crate::host::native(|| (vt.va_initialize)(dpy, &mut major, &mut minor)) };
+        let status =
+            unsafe { crate::host::native(|| (vt.va_initialize)(dpy, &mut major, &mut minor)) };
         if status != VA_STATUS_SUCCESS {
             let message = error_str(vt, status);
             // Don't `vaTerminate` — init failed. Just close the fd.
@@ -256,7 +257,11 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buffer is large enough (max entries). `&mut num`
         // is written by libva to the actual count returned.
-        let status = unsafe { crate::host::native(|| (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num)) };
+        let status = unsafe {
+            crate::host::native(|| {
+                (vt.va_query_config_profiles)(self.dpy, buf.as_mut_ptr(), &mut num)
+            })
+        };
         if status != VA_STATUS_SUCCESS {
             return Err(VaError::Va {
                 status,
@@ -287,7 +292,14 @@ impl Display {
         let mut num: i32 = 0;
         // SAFETY: buf is valid for 32 writes; `&mut num` outlives call.
         let status = unsafe {
-            crate::host::native(|| (vt.va_query_config_entrypoints)(self.dpy, profile.raw(), buf.as_mut_ptr(), &mut num))
+            crate::host::native(|| {
+                (vt.va_query_config_entrypoints)(
+                    self.dpy,
+                    profile.raw(),
+                    buf.as_mut_ptr(),
+                    &mut num,
+                )
+            })
         };
         if status == sys::VA_STATUS_ERROR_UNSUPPORTED_PROFILE {
             return Ok(Vec::new());
@@ -452,12 +464,12 @@ impl Drop for Display {
             // SAFETY: `dpy` came from a successful init pair.
             unsafe { crate::host::native(|| (vt.va_terminate)(self.dpy)) };
         }
-        if self.fd >= 0 {
-            if let Ok(vt) = sys::vtable() {
-                // SAFETY: fd was opened by us through `vt.open` and not
-                // closed elsewhere.
-                crate::host::native(|| unsafe { (vt.close)(self.fd) });
-            }
+        if self.fd >= 0
+            && let Ok(vt) = sys::vtable()
+        {
+            // SAFETY: fd was opened by us through `vt.open` and not
+            // closed elsewhere.
+            crate::host::native(|| unsafe { (vt.close)(self.fd) });
         }
     }
 }

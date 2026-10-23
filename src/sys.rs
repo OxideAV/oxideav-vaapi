@@ -25,8 +25,8 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
 
-pub mod hevc;
 pub mod av1;
+pub mod hevc;
 pub mod vp9;
 
 // ─────────────────────────── opaque VA types ──────────────────────────────────
@@ -645,7 +645,9 @@ fn load_vtable_host(host: &crate::host::HostLoader) -> Result<Vtable, String> {
         ($lib:ident, $name:expr, $ty:ty) => {{
             // SAFETY: the host promised `resolve` returns the named C
             // function or null; a non-null result has the documented prototype.
-            let p = unsafe { (host.resolve)(host.context, concat!($name, "\0").as_ptr() as *const c_char) };
+            let p = unsafe {
+                (host.resolve)(host.context, concat!($name, "\0").as_ptr() as *const c_char)
+            };
             if p.is_null() {
                 return Err(format!("host loader: no {}", $name));
             }
@@ -667,7 +669,11 @@ fn load_vtable_host(host: &crate::host::HostLoader) -> Result<Vtable, String> {
         va_render_picture: sym!(libva, "vaRenderPicture", FnVaRenderPicture),
         va_end_picture: sym!(libva, "vaEndPicture", FnVaEndPicture),
         va_create_buffer: sym!(libva, "vaCreateBuffer", FnVaCreateBuffer),
-        va_query_config_entrypoints: sym!(libva, "vaQueryConfigEntrypoints", FnVaQueryConfigEntrypoints),
+        va_query_config_entrypoints: sym!(
+            libva,
+            "vaQueryConfigEntrypoints",
+            FnVaQueryConfigEntrypoints
+        ),
         va_get_config_attributes: sym!(libva, "vaGetConfigAttributes", FnVaGetConfigAttributes),
         va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
         va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
@@ -730,7 +736,11 @@ fn load_vtable_system() -> Result<Vtable, String> {
         va_render_picture: sym!(libva, "vaRenderPicture", FnVaRenderPicture),
         va_end_picture: sym!(libva, "vaEndPicture", FnVaEndPicture),
         va_create_buffer: sym!(libva, "vaCreateBuffer", FnVaCreateBuffer),
-        va_query_config_entrypoints: sym!(libva, "vaQueryConfigEntrypoints", FnVaQueryConfigEntrypoints),
+        va_query_config_entrypoints: sym!(
+            libva,
+            "vaQueryConfigEntrypoints",
+            FnVaQueryConfigEntrypoints
+        ),
         va_get_config_attributes: sym!(libva, "vaGetConfigAttributes", FnVaGetConfigAttributes),
         va_destroy_config: sym!(libva, "vaDestroyConfig", FnVaDestroyConfig),
         va_destroy_context: sym!(libva, "vaDestroyContext", FnVaDestroyContext),
@@ -755,12 +765,14 @@ fn load_vtable_system() -> Result<Vtable, String> {
 #[cfg(feature = "system-loader")]
 unsafe extern "C" fn libc_open(path: *const c_char, flags: i32) -> i32 {
     // Linux flag values (`O_RDWR_CLOEXEC`), the target's own here.
-    libc::open(path, flags)
+    // SAFETY: the caller passes a NUL-terminated path.
+    unsafe { libc::open(path, flags) }
 }
 
 #[cfg(feature = "system-loader")]
 unsafe extern "C" fn libc_close(fd: i32) -> i32 {
-    libc::close(fd)
+    // SAFETY: closing a descriptor has no memory-safety preconditions.
+    unsafe { libc::close(fd) }
 }
 
 #[cfg(feature = "system-loader")]

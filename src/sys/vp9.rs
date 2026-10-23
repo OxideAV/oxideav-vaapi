@@ -5,7 +5,7 @@
 //! with the shifts below (bit 0 is the first declared field on every
 //! libva ABI).
 
-use super::{VASurfaceID, VA_PADDING_LOW, VA_PADDING_MEDIUM};
+use super::{VA_PADDING_LOW, VA_PADDING_MEDIUM, VASurfaceID};
 
 /// Bit positions in `VADecPictureParameterBufferVP9::pic_fields`.
 pub mod pic_fields {
@@ -90,11 +90,20 @@ mod tests {
     // Sizes and offsets of the x86-64 / aarch64 libva ABI.
     #[test]
     fn layouts() {
-        assert_eq!(offset_of!(VADecPictureParameterBufferVP9, reference_frames), 4);
+        assert_eq!(
+            offset_of!(VADecPictureParameterBufferVP9, reference_frames),
+            4
+        );
         assert_eq!(offset_of!(VADecPictureParameterBufferVP9, pic_fields), 36);
         assert_eq!(offset_of!(VADecPictureParameterBufferVP9, filter_level), 40);
-        assert_eq!(offset_of!(VADecPictureParameterBufferVP9, first_partition_size), 46);
-        assert_eq!(offset_of!(VADecPictureParameterBufferVP9, mb_segment_tree_probs), 48);
+        assert_eq!(
+            offset_of!(VADecPictureParameterBufferVP9, first_partition_size),
+            46
+        );
+        assert_eq!(
+            offset_of!(VADecPictureParameterBufferVP9, mb_segment_tree_probs),
+            48
+        );
         assert_eq!(offset_of!(VADecPictureParameterBufferVP9, profile), 58);
         assert_eq!(offset_of!(VADecPictureParameterBufferVP9, va_reserved), 60);
         assert_eq!(size_of::<VADecPictureParameterBufferVP9>(), 92);

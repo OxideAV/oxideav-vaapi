@@ -22,11 +22,9 @@
 use std::collections::BTreeMap;
 
 use oxideav_h264::decoder::{Decoder as Parser, Event};
-use oxideav_h264::poc::{derive_poc, PocResult, PocSlice, PocSps, PocState};
+use oxideav_h264::poc::{PocResult, PocSlice, PocSps, PocState, derive_poc};
 use oxideav_h264::pps::Pps;
-use oxideav_h264::ref_list::{
-    self, DpbEntry, MmcoOp as RefMmco, PicStructure, RefMarking, RplmOp,
-};
+use oxideav_h264::ref_list::{self, DpbEntry, MmcoOp as RefMmco, PicStructure, RefMarking, RplmOp};
 use oxideav_h264::slice_header::{
     MmcoOp as SliceMmco, RefPicListModificationOp, SliceHeader, SliceType,
 };
@@ -34,11 +32,11 @@ use oxideav_h264::sps::Sps;
 use oxideav_h264::transform::{select_scaling_list_4x4, select_scaling_list_8x8};
 
 use crate::display::Display;
-use crate::session::{check_decode, Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat};
+use crate::session::{Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat, check_decode};
 use crate::sys::{
-    buffer_type, profile, VAIQMatrixBufferH264, VAPictureH264, VAPictureParameterBufferH264,
-    VASliceParameterBufferH264, VA_PICTURE_H264_LONG_TERM_REFERENCE,
-    VA_PICTURE_H264_SHORT_TERM_REFERENCE, VA_SLICE_DATA_FLAG_ALL,
+    VA_PICTURE_H264_LONG_TERM_REFERENCE, VA_PICTURE_H264_SHORT_TERM_REFERENCE,
+    VA_SLICE_DATA_FLAG_ALL, VAIQMatrixBufferH264, VAPictureH264, VAPictureParameterBufferH264,
+    VASliceParameterBufferH264, buffer_type, profile,
 };
 
 /// Bit positions in `VAPictureParameterBufferH264::seq_fields`.
@@ -157,32 +155,52 @@ impl H264Decoder {
     /// cannot decode it.
     pub fn requirements(sps: &Sps) -> Result<H264Requirements, DecodeError> {
         if sps.chroma_format_idc != 1 || sps.separate_colour_plane_flag {
-            return Err(DecodeError::Unsupported(format!("H.264 chroma_format_idc {}", sps.chroma_format_idc)));
+            return Err(DecodeError::Unsupported(format!(
+                "H.264 chroma_format_idc {}",
+                sps.chroma_format_idc
+            )));
         }
         if sps.bit_depth_luma_minus8 != 0 || sps.bit_depth_chroma_minus8 != 0 {
             return Err(DecodeError::Unsupported("H.264 above 8 bits".into()));
         }
         if sps.qpprime_y_zero_transform_bypass_flag {
-            return Err(DecodeError::Unsupported("H.264 lossless macroblocks".into()));
+            return Err(DecodeError::Unsupported(
+                "H.264 lossless macroblocks".into(),
+            ));
         }
         let constrained = sps.constraint_set_flags & 0b10 != 0;
         let va_profile = match sps.profile_idc {
             66 if constrained => profile::VAProfileH264ConstrainedBaseline,
             77 => profile::VAProfileH264Main,
             // A Baseline stream that is also Main conformant (constraint_set1).
-            66 => return Err(DecodeError::Unsupported("H.264 Baseline without constraint_set1".into())),
+            66 => {
+                return Err(DecodeError::Unsupported(
+                    "H.264 Baseline without constraint_set1".into(),
+                ));
+            }
             100 => profile::VAProfileH264High,
             p => return Err(DecodeError::Unsupported(format!("H.264 profile_idc {p}"))),
         };
         let coded_width = sps.pic_width_in_mbs() * 16;
         let coded_height = sps.frame_height_in_mbs() * 16;
         let surfaces = (sps.max_num_ref_frames as usize + 2).clamp(4, 18);
-        Ok(H264Requirements { va_profile, coded_width, coded_height, surfaces })
+        Ok(H264Requirements {
+            va_profile,
+            coded_width,
+            coded_height,
+            surfaces,
+        })
     }
 
     /// Whether `display` decodes such a sequence.
     pub fn supports(display: &Display, r: &H264Requirements) -> Result<(), DecodeError> {
-        check_decode(display, r.va_profile, SurfaceFormat::Nv12, r.coded_width, r.coded_height)
+        check_decode(
+            display,
+            r.va_profile,
+            SurfaceFormat::Nv12,
+            r.coded_width,
+            r.coded_height,
+        )
     }
 
     /// Create the session for the last sequence parameter set seen, so a
@@ -223,7 +241,11 @@ impl H264Decoder {
         Ok(std::mem::take(&mut self.out))
     }
 
-    pub fn read(&mut self, picture: &H264Picture, planes: &mut Planes<'_>) -> Result<(), DecodeError> {
+    pub fn read(
+        &mut self,
+        picture: &H264Picture,
+        planes: &mut Planes<'_>,
+    ) -> Result<(), DecodeError> {
         let session = self
             .session
             .as_mut()
@@ -237,7 +259,9 @@ impl H264Decoder {
             return Ok(());
         }
         if self.session.is_some() && !idr {
-            return Err(DecodeError::Bitstream("sequence change without an IDR picture".into()));
+            return Err(DecodeError::Bitstream(
+                "sequence change without an IDR picture".into(),
+            ));
         }
         let display = match self.session.take() {
             Some(s) => s.into_display(),
@@ -250,7 +274,14 @@ impl H264Decoder {
         self.slots.clear();
         self.returned_only.clear();
         self.requirements = None;
-        match DecodeSession::new(display, r.va_profile, SurfaceFormat::Nv12, r.coded_width, r.coded_height, r.surfaces) {
+        match DecodeSession::new(
+            display,
+            r.va_profile,
+            SurfaceFormat::Nv12,
+            r.coded_width,
+            r.coded_height,
+            r.surfaces,
+        ) {
             Ok(s) => {
                 self.session = Some(s);
                 self.requirements = Some(r);
@@ -276,7 +307,16 @@ impl H264Decoder {
             .parser
             .process_nal(coded)
             .map_err(|e| DecodeError::Bitstream(format!("H.264 NAL unit: {e:?}")))?;
-        let Event::Slice { nal_unit_type, nal_ref_idc, header, slice_data_cursor, pps, sps, .. } = event else {
+        let Event::Slice {
+            nal_unit_type,
+            nal_ref_idc,
+            header,
+            slice_data_cursor,
+            pps,
+            sps,
+            ..
+        } = event
+        else {
             return Ok(());
         };
         if header.field_pic_flag {
@@ -300,11 +340,15 @@ impl H264Decoder {
             self.begin_picture(nal_unit_type, nal_ref_idc, &header, sps, pps)?;
         }
         let data_bit_offset = 8 + slice_data_cursor.0 as u32 * 8 + u32::from(slice_data_cursor.1);
-        self.pending.as_mut().expect("picture begun").slices.push(Slice {
-            header,
-            coded: coded.to_vec(),
-            data_bit_offset,
-        });
+        self.pending
+            .as_mut()
+            .expect("picture begun")
+            .slices
+            .push(Slice {
+                header,
+                coded: coded.to_vec(),
+                data_bit_offset,
+            });
         Ok(())
     }
 
@@ -318,24 +362,28 @@ impl H264Decoder {
     ) -> Result<(), DecodeError> {
         let idr = nal_unit_type == 5;
         if header.first_mb_in_slice != 0 {
-            return Err(DecodeError::Unsupported("H.264 arbitrary slice order".into()));
+            return Err(DecodeError::Unsupported(
+                "H.264 arbitrary slice order".into(),
+            ));
         }
         let r = Self::requirements(&sps)?;
         if !idr && self.session.is_none() {
-            return Err(DecodeError::Bitstream("stream does not start with an IDR picture".into()));
+            return Err(DecodeError::Bitstream(
+                "stream does not start with an IDR picture".into(),
+            ));
         }
         self.ensure_session(r, idr)?;
         let max_frame_num = sps.max_frame_num();
-        if !idr {
-            if let Some(prev) = self.prev_ref_frame_num {
-                if header.frame_num != prev && header.frame_num != (prev + 1) % max_frame_num {
-                    return Err(if sps.gaps_in_frame_num_value_allowed_flag {
-                        DecodeError::Unsupported("H.264 frame_num gap".into())
-                    } else {
-                        DecodeError::Bitstream("frame_num out of sequence".into())
-                    });
-                }
-            }
+        if !idr
+            && let Some(prev) = self.prev_ref_frame_num
+            && header.frame_num != prev
+            && header.frame_num != (prev + 1) % max_frame_num
+        {
+            return Err(if sps.gaps_in_frame_num_value_allowed_flag {
+                DecodeError::Unsupported("H.264 frame_num gap".into())
+            } else {
+                DecodeError::Bitstream("frame_num out of sequence".into())
+            });
         }
         let poc_sps = PocSps {
             pic_order_cnt_type: sps.pic_order_cnt_type,
@@ -362,12 +410,21 @@ impl H264Decoder {
         };
         let poc = derive_poc(&poc_sps, &poc_slice, &mut self.poc_state)
             .map_err(|e| DecodeError::Bitstream(format!("H.264 picture order count: {e:?}")))?;
-        self.pending = Some(InProgress { sps, pps, nal_unit_type, nal_ref_idc, poc, slices: Vec::new() });
+        self.pending = Some(InProgress {
+            sps,
+            pps,
+            nal_unit_type,
+            nal_ref_idc,
+            poc,
+            slices: Vec::new(),
+        });
         Ok(())
     }
 
     fn finish_picture(&mut self) -> Result<(), DecodeError> {
-        let Some(p) = self.pending.take() else { return Ok(()) };
+        let Some(p) = self.pending.take() else {
+            return Ok(());
+        };
         if p.slices.is_empty() {
             return Ok(());
         }
@@ -379,9 +436,9 @@ impl H264Decoder {
         let max_frame_num = sps.max_frame_num();
 
         let session = self.session.as_mut().expect("session ensured");
-        let target = session
-            .acquire()
-            .ok_or_else(|| DecodeError::Bitstream("more pictures held than the DPB allows".into()))?;
+        let target = session.acquire().ok_or_else(|| {
+            DecodeError::Bitstream("more pictures held than the DPB allows".into())
+        })?;
 
         // ReferenceFrames[]: every picture marked for reference.
         let picture_of = |e: &DpbEntry, session: &DecodeSession, slots: &BTreeMap<u32, usize>| {
@@ -389,8 +446,16 @@ impl H264Decoder {
             let long = e.marking == RefMarking::LongTerm;
             Some(VAPictureH264 {
                 picture_id: session.surface(slot),
-                frame_idx: if long { e.long_term_frame_idx } else { e.frame_num },
-                flags: if long { VA_PICTURE_H264_LONG_TERM_REFERENCE } else { VA_PICTURE_H264_SHORT_TERM_REFERENCE },
+                frame_idx: if long {
+                    e.long_term_frame_idx
+                } else {
+                    e.frame_num
+                },
+                flags: if long {
+                    VA_PICTURE_H264_LONG_TERM_REFERENCE
+                } else {
+                    VA_PICTURE_H264_SHORT_TERM_REFERENCE
+                },
                 top_field_order_cnt: e.top_field_order_cnt,
                 bottom_field_order_cnt: e.bottom_field_order_cnt,
                 va_reserved: [0; 4],
@@ -407,11 +472,11 @@ impl H264Decoder {
         };
         let mut n = 0;
         for e in self.dpb.iter().filter(|e| e.marking != RefMarking::Unused) {
-            if let Some(v) = picture_of(e, session, &self.slots) {
-                if n < 16 {
-                    pic.reference_frames[n] = v;
-                    n += 1;
-                }
+            if let Some(v) = picture_of(e, session, &self.slots)
+                && n < 16
+            {
+                pic.reference_frames[n] = v;
+                n += 1;
             }
         }
         let iq = iq_matrix(sps, pps);
@@ -422,15 +487,28 @@ impl H264Decoder {
             let mut sp = slice_parameters(h, pps, s.coded.len(), s.data_bit_offset);
             if h.slice_type.has_list_0() {
                 let (mut l0, mut l1) = match h.slice_type {
-                    SliceType::B => ref_list::init_ref_pic_lists_b(&self.dpb, p.poc.pic_order_cnt, PicStructure::Frame, false),
+                    SliceType::B => ref_list::init_ref_pic_lists_b(
+                        &self.dpb,
+                        p.poc.pic_order_cnt,
+                        PicStructure::Frame,
+                        false,
+                    ),
                     _ => (
-                        ref_list::init_ref_pic_list_p(&self.dpb, h.frame_num, max_frame_num, PicStructure::Frame, false),
+                        ref_list::init_ref_pic_list_p(
+                            &self.dpb,
+                            h.frame_num,
+                            max_frame_num,
+                            PicStructure::Frame,
+                            false,
+                        ),
                         Vec::new(),
                     ),
                 };
                 if l0.is_empty() {
                     session.release(target);
-                    return Err(DecodeError::Bitstream("inter slice without reference pictures".into()));
+                    return Err(DecodeError::Bitstream(
+                        "inter slice without reference pictures".into(),
+                    ));
                 }
                 let ops = |m: &[RefPicListModificationOp]| -> Vec<RplmOp> {
                     m.iter()
@@ -470,7 +548,9 @@ impl H264Decoder {
                             Some(v) => out[i] = v,
                             None => {
                                 session.release(target);
-                                return Err(DecodeError::Unsupported("H.264 reference without a decoded picture".into()));
+                                return Err(DecodeError::Unsupported(
+                                    "H.264 reference without a decoded picture".into(),
+                                ));
                             }
                         }
                     }
@@ -487,7 +567,10 @@ impl H264Decoder {
             buffers.push(Buffer::of(buffer_type::VASliceParameterBufferType, sp));
             buffers.push(Buffer::bytes(buffer_type::VASliceDataBufferType, &s.coded));
         }
-        if let Err(e) = session.submit(target, &buffers).and_then(|()| session.sync(target)) {
+        if let Err(e) = session
+            .submit(target, &buffers)
+            .and_then(|()| session.sync(target))
+        {
             session.release(target);
             return Err(e);
         }
@@ -499,7 +582,11 @@ impl H264Decoder {
             bottom_field_order_cnt: p.poc.bottom_field_order_cnt,
             pic_order_cnt: p.poc.pic_order_cnt,
             structure: PicStructure::Frame,
-            marking: if reference { RefMarking::ShortTerm } else { RefMarking::Unused },
+            marking: if reference {
+                RefMarking::ShortTerm
+            } else {
+                RefMarking::Unused
+            },
             long_term_frame_idx: 0,
             dpb_key: self.next_key,
             field_markings: [RefMarking::Unused; 2],
@@ -510,18 +597,22 @@ impl H264Decoder {
         let mut poc = p.poc.pic_order_cnt;
         if reference {
             let marking = first.dec_ref_pic_marking.as_ref();
-            let adaptive: Option<Vec<RefMmco>> = marking.and_then(|m| m.adaptive_marking.as_ref()).map(|ops| {
-                ops.iter()
-                    .map(|op| match *op {
-                        SliceMmco::MarkShortTermUnused(v) => RefMmco::MarkShortTermUnused(v),
-                        SliceMmco::MarkLongTermUnused(v) => RefMmco::MarkLongTermUnused(v),
-                        SliceMmco::AssignLongTerm(d, i) => RefMmco::AssignLongTerm(d, i),
-                        SliceMmco::SetMaxLongTermIdx(v) => RefMmco::SetMaxLongTermIdx(v),
-                        SliceMmco::MarkAllUnused => RefMmco::MarkAllUnused,
-                        SliceMmco::AssignCurrentLongTerm(v) => RefMmco::AssignCurrentLongTerm(v),
-                    })
-                    .collect()
-            });
+            let adaptive: Option<Vec<RefMmco>> = marking
+                .and_then(|m| m.adaptive_marking.as_ref())
+                .map(|ops| {
+                    ops.iter()
+                        .map(|op| match *op {
+                            SliceMmco::MarkShortTermUnused(v) => RefMmco::MarkShortTermUnused(v),
+                            SliceMmco::MarkLongTermUnused(v) => RefMmco::MarkLongTermUnused(v),
+                            SliceMmco::AssignLongTerm(d, i) => RefMmco::AssignLongTerm(d, i),
+                            SliceMmco::SetMaxLongTermIdx(v) => RefMmco::SetMaxLongTermIdx(v),
+                            SliceMmco::MarkAllUnused => RefMmco::MarkAllUnused,
+                            SliceMmco::AssignCurrentLongTerm(v) => {
+                                RefMmco::AssignCurrentLongTerm(v)
+                            }
+                        })
+                        .collect()
+                });
             mmco5 = ref_list::perform_marking(
                 &mut self.dpb,
                 &mut current,
@@ -539,16 +630,23 @@ impl H264Decoder {
                 current.frame_num = 0;
                 current.top_field_order_cnt -= temp;
                 current.bottom_field_order_cnt -= temp;
-                current.pic_order_cnt = current.top_field_order_cnt.min(current.bottom_field_order_cnt);
+                current.pic_order_cnt = current
+                    .top_field_order_cnt
+                    .min(current.bottom_field_order_cnt);
                 poc = current.pic_order_cnt;
             }
             self.prev_had_mmco5 = mmco5;
-            self.prev_reference_top_foc = if mmco5 { p.poc.top_field_order_cnt - p.poc.pic_order_cnt } else { 0 };
+            self.prev_reference_top_foc = if mmco5 {
+                p.poc.top_field_order_cnt - p.poc.pic_order_cnt
+            } else {
+                0
+            };
             self.prev_ref_frame_num = Some(if mmco5 { 0 } else { first.frame_num });
         }
         // Entries no longer used for reference give their surfaces back.
-        let (kept, dropped): (Vec<DpbEntry>, Vec<DpbEntry>) =
-            std::mem::take(&mut self.dpb).into_iter().partition(DpbEntry::is_any_field_ref);
+        let (kept, dropped): (Vec<DpbEntry>, Vec<DpbEntry>) = std::mem::take(&mut self.dpb)
+            .into_iter()
+            .partition(DpbEntry::is_any_field_ref);
         self.dpb = kept;
         let session = self.session.as_mut().expect("session ensured");
         for e in dropped {
@@ -578,7 +676,13 @@ impl H264Decoder {
 }
 
 /// §7.4.1.2.4: whether a slice begins a new primary coded picture.
-fn first_slice_of_new_picture(p: &InProgress, nal_unit_type: u8, nal_ref_idc: u8, h: &SliceHeader, sps: &Sps) -> bool {
+fn first_slice_of_new_picture(
+    p: &InProgress,
+    nal_unit_type: u8,
+    nal_ref_idc: u8,
+    h: &SliceHeader,
+    sps: &Sps,
+) -> bool {
     let prev = &p.slices.last().expect("picture has a slice").header;
     let first = &p.slices[0].header;
     prev.frame_num != h.frame_num
@@ -598,12 +702,22 @@ fn bit(flag: bool, at: u32) -> u32 {
     u32::from(flag) << at
 }
 
-fn picture_parameters(sps: &Sps, pps: &Pps, h: &SliceHeader, reference: bool) -> VAPictureParameterBufferH264 {
-    let transform_8x8 = pps.extension.as_ref().is_some_and(|e| e.transform_8x8_mode_flag);
+fn picture_parameters(
+    sps: &Sps,
+    pps: &Pps,
+    h: &SliceHeader,
+    reference: bool,
+) -> VAPictureParameterBufferH264 {
+    let transform_8x8 = pps
+        .extension
+        .as_ref()
+        .is_some_and(|e| e.transform_8x8_mode_flag);
     let second_chroma = pps
         .extension
         .as_ref()
-        .map_or(pps.chroma_qp_index_offset, |e| e.second_chroma_qp_index_offset);
+        .map_or(pps.chroma_qp_index_offset, |e| {
+            e.second_chroma_qp_index_offset
+        });
     use seq_fields::*;
     let seq = (sps.chroma_format_idc & 3) << CHROMA_FORMAT_IDC
         | bit(sps.gaps_in_frame_num_value_allowed_flag, GAPS_IN_FRAME_NUM_VALUE_ALLOWED)
@@ -622,9 +736,18 @@ fn picture_parameters(sps: &Sps, pps: &Pps, h: &SliceHeader, reference: bool) ->
         | (pps.weighted_bipred_idc & 3) << WEIGHTED_BIPRED_IDC
         | bit(transform_8x8, TRANSFORM_8X8_MODE)
         | bit(pps.constrained_intra_pred_flag, CONSTRAINED_INTRA_PRED)
-        | bit(pps.bottom_field_pic_order_in_frame_present_flag, PIC_ORDER_PRESENT)
-        | bit(pps.deblocking_filter_control_present_flag, DEBLOCKING_FILTER_CONTROL_PRESENT)
-        | bit(pps.redundant_pic_cnt_present_flag, REDUNDANT_PIC_CNT_PRESENT)
+        | bit(
+            pps.bottom_field_pic_order_in_frame_present_flag,
+            PIC_ORDER_PRESENT,
+        )
+        | bit(
+            pps.deblocking_filter_control_present_flag,
+            DEBLOCKING_FILTER_CONTROL_PRESENT,
+        )
+        | bit(
+            pps.redundant_pic_cnt_present_flag,
+            REDUNDANT_PIC_CNT_PRESENT,
+        )
         | bit(reference, REFERENCE_PIC);
     VAPictureParameterBufferH264 {
         curr_pic: VAPictureH264::invalid(),
@@ -666,7 +789,12 @@ fn iq_matrix(sps: &Sps, pps: &Pps) -> VAIQMatrixBufferH264 {
     m
 }
 
-fn slice_parameters(h: &SliceHeader, pps: &Pps, coded_len: usize, data_bit_offset: u32) -> VASliceParameterBufferH264 {
+fn slice_parameters(
+    h: &SliceHeader,
+    pps: &Pps,
+    coded_len: usize,
+    data_bit_offset: u32,
+) -> VASliceParameterBufferH264 {
     let mut sp = VASliceParameterBufferH264 {
         slice_data_size: coded_len as u32,
         slice_data_offset: 0,
@@ -675,8 +803,16 @@ fn slice_parameters(h: &SliceHeader, pps: &Pps, coded_len: usize, data_bit_offse
         first_mb_in_slice: h.first_mb_in_slice as u16,
         slice_type: (h.slice_type_raw % 5) as u8,
         direct_spatial_mv_pred_flag: u8::from(h.direct_spatial_mv_pred_flag),
-        num_ref_idx_l0_active_minus1: if h.slice_type.has_list_0() { h.num_ref_idx_l0_active_minus1 as u8 } else { 0 },
-        num_ref_idx_l1_active_minus1: if h.slice_type.has_list_1() { h.num_ref_idx_l1_active_minus1 as u8 } else { 0 },
+        num_ref_idx_l0_active_minus1: if h.slice_type.has_list_0() {
+            h.num_ref_idx_l0_active_minus1 as u8
+        } else {
+            0
+        },
+        num_ref_idx_l1_active_minus1: if h.slice_type.has_list_1() {
+            h.num_ref_idx_l1_active_minus1 as u8
+        } else {
+            0
+        },
         cabac_init_idc: h.cabac_init_idc as u8,
         slice_qp_delta: h.slice_qp_delta as i8,
         disable_deblocking_filter_idc: h.disable_deblocking_filter_idc as u8,
@@ -713,18 +849,34 @@ fn slice_parameters(h: &SliceHeader, pps: &Pps, coded_len: usize, data_bit_offse
         let chroma_default = 1i32 << w.chroma_log2_weight_denom;
         let lists = [
             (&w.luma_weights_l0, &w.chroma_weights_l0, true),
-            (&w.luma_weights_l1, &w.chroma_weights_l1, h.slice_type.has_list_1()),
+            (
+                &w.luma_weights_l1,
+                &w.chroma_weights_l1,
+                h.slice_type.has_list_1(),
+            ),
         ];
         for (k, (luma, chroma, used)) in lists.into_iter().enumerate() {
             if !used {
                 continue;
             }
             let (lw, lo, cw, co, lf, cf) = if k == 0 {
-                (&mut sp.luma_weight_l0, &mut sp.luma_offset_l0, &mut sp.chroma_weight_l0, &mut sp.chroma_offset_l0,
-                 &mut sp.luma_weight_l0_flag, &mut sp.chroma_weight_l0_flag)
+                (
+                    &mut sp.luma_weight_l0,
+                    &mut sp.luma_offset_l0,
+                    &mut sp.chroma_weight_l0,
+                    &mut sp.chroma_offset_l0,
+                    &mut sp.luma_weight_l0_flag,
+                    &mut sp.chroma_weight_l0_flag,
+                )
             } else {
-                (&mut sp.luma_weight_l1, &mut sp.luma_offset_l1, &mut sp.chroma_weight_l1, &mut sp.chroma_offset_l1,
-                 &mut sp.luma_weight_l1_flag, &mut sp.chroma_weight_l1_flag)
+                (
+                    &mut sp.luma_weight_l1,
+                    &mut sp.luma_offset_l1,
+                    &mut sp.chroma_weight_l1,
+                    &mut sp.chroma_offset_l1,
+                    &mut sp.luma_weight_l1_flag,
+                    &mut sp.chroma_weight_l1_flag,
+                )
             };
             *lf = 1;
             *cf = 1;
@@ -732,7 +884,11 @@ fn slice_parameters(h: &SliceHeader, pps: &Pps, coded_len: usize, data_bit_offse
                 let (wl, ol) = luma.get(i).copied().flatten().unwrap_or((luma_default, 0));
                 lw[i] = wl as i16;
                 lo[i] = ol as i16;
-                let c = chroma.get(i).copied().flatten().unwrap_or([(chroma_default, 0); 2]);
+                let c = chroma
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or([(chroma_default, 0); 2]);
                 for j in 0..2 {
                     cw[i][j] = c[j].0 as i16;
                     co[i][j] = c[j].1 as i16;

@@ -17,15 +17,15 @@
 //! frame it shows, if any, as soon as the hardware has finished it.
 
 use oxideav_vp9::{
-    get_ac_quant, get_dc_quant, loop_filter_frame_init, parse_uncompressed_header_with_refs,
-    split_superframe, ColorConfig, FrameType, RefFrameState, SegmentationParams, Vp9FrameHeader,
-    MAX_SEGMENTS, SEG_LVL_MAX,
+    ColorConfig, FrameType, MAX_SEGMENTS, RefFrameState, SEG_LVL_MAX, SegmentationParams,
+    Vp9FrameHeader, get_ac_quant, get_dc_quant, loop_filter_frame_init,
+    parse_uncompressed_header_with_refs, split_superframe,
 };
 
 use crate::display::Display;
-use crate::session::{check_decode, Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat};
+use crate::session::{Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat, check_decode};
 use crate::sys::vp9::*;
-use crate::sys::{buffer_type, profile, VA_INVALID_SURFACE, VA_SLICE_DATA_FLAG_ALL};
+use crate::sys::{VA_INVALID_SURFACE, VA_SLICE_DATA_FLAG_ALL, buffer_type, profile};
 
 /// §6.4.9 feature indices.
 const SEG_LVL_REF_FRAME: usize = 2;
@@ -114,13 +114,18 @@ impl Vp9Decoder {
             _ => {
                 return Err(DecodeError::Unsupported(format!(
                     "VP9 profile {profile_number} at {bit_depth} bits"
-                )))
+                )));
             }
         };
         if width == 0 || height == 0 || width > 65536 || height > 65536 {
             return Err(DecodeError::Unsupported(format!("size {width}x{height}")));
         }
-        Ok(Vp9Requirements { va_profile, format, width, height })
+        Ok(Vp9Requirements {
+            va_profile,
+            format,
+            width,
+            height,
+        })
     }
 
     /// Whether `display` decodes such a sequence.
@@ -139,7 +144,11 @@ impl Vp9Decoder {
     }
 
     /// Copy a returned picture's samples into `planes` (NV12 / P010).
-    pub fn read(&mut self, picture: &Vp9Picture, planes: &mut Planes<'_>) -> Result<(), DecodeError> {
+    pub fn read(
+        &mut self,
+        picture: &Vp9Picture,
+        planes: &mut Planes<'_>,
+    ) -> Result<(), DecodeError> {
         let session = self
             .session
             .as_mut()
@@ -159,10 +168,10 @@ impl Vp9Decoder {
         }
         let mut shown: Option<Vp9Picture> = None;
         for frame in frames {
-            if let Some(p) = self.decode_frame(frame)? {
-                if let Some(old) = shown.replace(p) {
-                    self.unuse(old.slot);
-                }
+            if let Some(p) = self.decode_frame(frame)?
+                && let Some(old) = shown.replace(p)
+            {
+                self.unuse(old.slot);
             }
         }
         if let Some(p) = &shown {
@@ -205,10 +214,10 @@ impl Vp9Decoder {
 
     fn unuse(&mut self, slot: usize) {
         self.users[slot] = self.users[slot].saturating_sub(1);
-        if self.users[slot] == 0 {
-            if let Some(s) = self.session.as_mut() {
-                s.release(slot);
-            }
+        if self.users[slot] == 0
+            && let Some(s) = self.session.as_mut()
+        {
+            s.release(slot);
         }
     }
 
@@ -240,7 +249,9 @@ impl Vp9Decoder {
         let intra = key || h.intra_only;
         let bit_depth = h.color_config.bit_depth;
         if !h.color_config.subsampling_x || !h.color_config.subsampling_y {
-            return Err(DecodeError::Unsupported("VP9 chroma other than 4:2:0".into()));
+            return Err(DecodeError::Unsupported(
+                "VP9 chroma other than 4:2:0".into(),
+            ));
         }
         let r = Self::requirements(h.profile, bit_depth, h.frame_width, h.frame_height)?;
         if key {
@@ -248,7 +259,9 @@ impl Vp9Decoder {
                 self.ensure_session(r)?;
             }
         } else if self.session.is_none() {
-            return Err(DecodeError::Bitstream("stream does not start with a key frame".into()));
+            return Err(DecodeError::Bitstream(
+                "stream does not start with a key frame".into(),
+            ));
         } else if self.requirements != Some(r) {
             return Err(DecodeError::Unsupported(format!(
                 "VP9 frame of {}x{} at {} bits in a {:?} sequence",
@@ -269,7 +282,11 @@ impl Vp9Decoder {
                 *slot = d;
             }
         }
-        for (slot, d) in self.lf_mode_deltas.iter_mut().zip(h.loop_filter.mode_deltas) {
+        for (slot, d) in self
+            .lf_mode_deltas
+            .iter_mut()
+            .zip(h.loop_filter.mode_deltas)
+        {
             if let Some(d) = d {
                 *slot = d;
             }
@@ -287,7 +304,13 @@ impl Vp9Decoder {
         };
 
         let pic = self.picture_parameters(&h, &seg)?;
-        let slice = slice_parameters(&h, &seg, frame.len(), self.lf_ref_deltas, self.lf_mode_deltas);
+        let slice = slice_parameters(
+            &h,
+            &seg,
+            frame.len(),
+            self.lf_ref_deltas,
+            self.lf_mode_deltas,
+        );
 
         let session = self.session.as_mut().expect("session ensured");
         let target = session
@@ -298,7 +321,10 @@ impl Vp9Decoder {
             Buffer::of(buffer_type::VASliceParameterBufferType, &slice),
             Buffer::bytes(buffer_type::VASliceDataBufferType, frame),
         ];
-        if let Err(e) = session.submit(target, &buffers).and_then(|()| session.sync(target)) {
+        if let Err(e) = session
+            .submit(target, &buffers)
+            .and_then(|()| session.sync(target))
+        {
             session.release(target);
             return Err(e);
         }
@@ -319,10 +345,10 @@ impl Vp9Decoder {
             self.color = Some(h.color_config);
         }
         if !h.show_frame {
-            if self.users[target] == 0 {
-                if let Some(s) = self.session.as_mut() {
-                    s.release(target);
-                }
+            if self.users[target] == 0
+                && let Some(s) = self.session.as_mut()
+            {
+                s.release(target);
             }
             return Ok(None);
         }
@@ -364,7 +390,10 @@ impl Vp9Decoder {
             | b(h.refresh_frame_context, REFRESH_FRAME_CONTEXT)
             | (u32::from(h.frame_context_idx & 3) << FRAME_CONTEXT_IDX)
             | b(seg.enabled, SEGMENTATION_ENABLED)
-            | b(seg.enabled && seg.temporal_update, SEGMENTATION_TEMPORAL_UPDATE)
+            | b(
+                seg.enabled && seg.temporal_update,
+                SEGMENTATION_TEMPORAL_UPDATE,
+            )
             | b(seg.enabled && seg.update_map, SEGMENTATION_UPDATE_MAP)
             | b(h.quantization.lossless, LOSSLESS_FLAG);
         if let Some(idx) = h.ref_frame_idx {
@@ -378,13 +407,16 @@ impl Vp9Decoder {
             {
                 let i = usize::from(idx[k] & 7);
                 if self.refs[i].is_none() && h.frame_type != FrameType::KeyFrame && !h.intra_only {
-                    return Err(DecodeError::Bitstream("inter frame refers to an empty slot".into()));
+                    return Err(DecodeError::Bitstream(
+                        "inter frame refers to an empty slot".into(),
+                    ));
                 }
                 fields |= (u32::from(idx[k] & 7) << at) | b(h.ref_frame_sign_bias[k], bias_at);
             }
         }
-        let header_len = u8::try_from(h.uncompressed_header_size_bytes)
-            .map_err(|_| DecodeError::Bitstream("uncompressed header longer than 255 bytes".into()))?;
+        let header_len = u8::try_from(h.uncompressed_header_size_bytes).map_err(|_| {
+            DecodeError::Bitstream("uncompressed header longer than 255 bytes".into())
+        })?;
         Ok(VADecPictureParameterBufferVP9 {
             frame_width: u16::try_from(h.frame_width)
                 .map_err(|_| DecodeError::Unsupported("VP9 width above 65535".into()))?,
@@ -452,10 +484,22 @@ mod tests {
     #[test]
     fn profile_requirements() {
         let r = Vp9Decoder::requirements(0, 8, 1920, 1080).unwrap();
-        assert_eq!((r.va_profile, r.format), (profile::VAProfileVP9Profile0, SurfaceFormat::Nv12));
+        assert_eq!(
+            (r.va_profile, r.format),
+            (profile::VAProfileVP9Profile0, SurfaceFormat::Nv12)
+        );
         let r = Vp9Decoder::requirements(2, 10, 1920, 1080).unwrap();
-        assert_eq!((r.va_profile, r.format), (profile::VAProfileVP9Profile2, SurfaceFormat::P010));
-        assert!(matches!(Vp9Decoder::requirements(1, 8, 64, 64), Err(DecodeError::Unsupported(_))));
-        assert!(matches!(Vp9Decoder::requirements(2, 12, 64, 64), Err(DecodeError::Unsupported(_))));
+        assert_eq!(
+            (r.va_profile, r.format),
+            (profile::VAProfileVP9Profile2, SurfaceFormat::P010)
+        );
+        assert!(matches!(
+            Vp9Decoder::requirements(1, 8, 64, 64),
+            Err(DecodeError::Unsupported(_))
+        ));
+        assert!(matches!(
+            Vp9Decoder::requirements(2, 12, 64, 64),
+            Err(DecodeError::Unsupported(_))
+        ));
     }
 }
