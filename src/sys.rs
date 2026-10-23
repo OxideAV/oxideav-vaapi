@@ -15,7 +15,7 @@
 //! and may be added later — DRM is the headless / server-friendly
 //! default and is what oxideav uses for transcoding pipelines.
 
-use libloading::Library;
+use dlsym::Library;
 use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::sync::OnceLock;
@@ -610,11 +610,16 @@ fn load_vtable() -> Result<Vtable, String> {
 
     macro_rules! sym {
         ($lib:expr_2021, $name:expr_2021, $ty:ty) => {{
-            let s: libloading::Symbol<$ty> = unsafe {
-                $lib.get(concat!($name, "\0").as_bytes())
+            // SAFETY: `$ty` is the libva.h prototype of `$name` (the
+            // `Fn*` aliases above); the pointer is detached from the
+            // `Symbol` borrow because the `Vtable` owns both `Library`
+            // handles for the process lifetime (the `OnceLock` cache
+            // never drops them), so it can never outlive its library.
+            unsafe {
+                $lib.get::<$ty>($name)
                     .map_err(|e| format!("dlsym {}: {}", $name, e))?
-            };
-            *s
+                    .into_inner()
+            }
         }};
     }
 
@@ -661,7 +666,7 @@ fn load_vtable() -> Result<Vtable, String> {
 fn open(path: &str) -> Result<Library, String> {
     // SAFETY: dlopen on a soname with no init callbacks; equivalent to
     // a normal program startup load.
-    unsafe { Library::new(path) }.map_err(|e| format!("dlopen {path}: {e}"))
+    unsafe { Library::open(path) }.map_err(|e| format!("dlopen {path}: {e}"))
 }
 
 /// Decode a `vaErrorStr` return into a Rust `String`. Returns a
@@ -697,14 +702,13 @@ mod tests {
         };
         // Confirm a stable VA entry point is present in libva so we
         // know the dynamic linker served the right SO.
-        let _: libloading::Symbol<unsafe extern "C" fn()> = unsafe {
-            fw.libva
-                .get(b"vaInitialize\0")
-                .expect("vaInitialize symbol")
-        };
-        let _: libloading::Symbol<unsafe extern "C" fn()> = unsafe {
+        // SAFETY: the types are the libva.h prototypes, and the symbols
+        // are only looked up here, never called.
+        let _: dlsym::Symbol<'_, FnVaInitialize> =
+            unsafe { fw.libva.get("vaInitialize").expect("vaInitialize symbol") };
+        let _: dlsym::Symbol<'_, FnVaGetDisplayDRM> = unsafe {
             fw.libva_drm
-                .get(b"vaGetDisplayDRM\0")
+                .get("vaGetDisplayDRM")
                 .expect("vaGetDisplayDRM symbol")
         };
     }

@@ -8,7 +8,7 @@ Linux VA-API hardware decode/encode bridge for the [oxideav](https://github.com/
 
 [VA-API](https://intel.github.io/libva/) is the dominant hardware acceleration interface on Linux for Intel iGPUs and AMD GPUs (via the radeonsi/Mesa driver), and it is also supported on NVIDIA through the `nvidia-vaapi-driver` shim. For codecs the chip supports natively this is **5–50× faster** than software decoding and orders of magnitude more energy-efficient.
 
-This crate is a **thin runtime-loaded bridge** — no compile-time link dependency on `libva`. The library is opened via [`libloading`] on first use.
+This crate is a **thin runtime-loaded bridge** — no compile-time link dependency on `libva`. The library is opened via [`dlsym`](https://crates.io/crates/dlsym) on first use.
 
 ## Fallback behaviour
 

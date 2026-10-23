@@ -1,4 +1,4 @@
-//! Round 2 integration tests — exercise the libloading bridge end-to-
+//! Round 2 integration tests — exercise the dlsym bridge end-to-
 //! end against whatever VA-API stack is on the host.
 //!
 //! Two regimes are valid:

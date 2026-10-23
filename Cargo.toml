@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/OxideAV/oxideav-vaapi"
 homepage = "https://github.com/OxideAV/oxideav-vaapi"
 authors = ["Mark Karpeles"]
-description = "Linux VA-API hardware decode/encode bridge for the oxideav framework — runtime-loaded via libloading, no compile-time libva dep"
+description = "Linux VA-API hardware decode/encode bridge for the oxideav framework — runtime-loaded via dlsym, no compile-time libva dep"
 readme = "README.md"
 keywords = ["vaapi", "linux", "hardware", "video", "oxideav"]
 categories = ["multimedia::encoding", "multimedia::video", "hardware-support"]
@@ -18,11 +18,11 @@ categories = ["multimedia::encoding", "multimedia::video", "hardware-support"]
 # `default-features = false` and avoid the framework dependency tree.
 oxideav-core = { version = "0.1", optional = true }
 
-# libloading is only pulled on Linux targets — every non-linux build
+# dlsym is only pulled on Linux targets — every non-linux build
 # ships a stub `register()` that's a no-op (the entire crate body is
 # `#![cfg(target_os = "linux")]`).
 [target.'cfg(target_os = "linux")'.dependencies]
-libloading = "0.8"
+dlsym = "0.0.2"
 # `libc` is a thin, well-vetted set of POSIX constants/typedefs used
 # only for `open`/`close` of the DRM render node. Treated like a
 # standard binding, NOT a competing implementation — calling

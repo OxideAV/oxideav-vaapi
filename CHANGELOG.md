@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - edition 2024, MSRV 1.95
+- loader: `libva.so.2` / `libva-drm.so.2` are opened and resolved through the `dlsym` crate instead of `libloading` (`sys::FrameworkSmoke` now holds `dlsym::Library` handles; the `sys::Vtable` fields are unchanged)
 
 ## [0.0.3](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.2...v0.0.3) - 2026-06-21
 

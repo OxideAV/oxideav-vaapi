@@ -3,7 +3,7 @@
 //!
 //! This crate is a **runtime-loaded** bridge to the
 //! [VA-API](https://intel.github.io/libva/) library family. It uses
-//! [`libloading`] to `dlopen` `libva.so.2` and `libva-drm.so.2` on
+//! [`dlsym`] to `dlopen` `libva.so.2` and `libva-drm.so.2` on
 //! first use, so:
 //!
 //! * Linux builds have **no compile-time link dependency** on libva;
