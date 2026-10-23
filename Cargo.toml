@@ -77,3 +77,7 @@ vp9 = ["dep:oxideav-vp9"]
 av1 = ["dep:oxideav-av1"]
 # H.264 decode over oxideav-h264's parser and reference picture management.
 h264 = ["dep:oxideav-h264"]
+
+[dev-dependencies]
+# The hardware decode test compares frames by MD5.
+md-5 = "0.10"
