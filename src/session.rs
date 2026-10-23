@@ -120,6 +120,18 @@ impl<'a> Buffer<'a> {
             data,
         }
     }
+    /// A buffer of several plain-data VA structures (one per tile, ...).
+    pub fn array<T: Copy>(kind: u32, values: &'a [T]) -> Self {
+        // SAFETY: T is a `repr(C)` VA structure of plain integers.
+        let data = unsafe {
+            std::slice::from_raw_parts(values.as_ptr() as *const u8, std::mem::size_of_val(values))
+        };
+        Buffer {
+            kind,
+            element_size: std::mem::size_of::<T>(),
+            data,
+        }
+    }
     /// A buffer of raw bytes (slice data).
     pub fn bytes(kind: u32, data: &'a [u8]) -> Self {
         Buffer {

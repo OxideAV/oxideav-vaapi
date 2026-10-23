@@ -26,6 +26,7 @@ use std::os::raw::c_char;
 use std::sync::OnceLock;
 
 pub mod hevc;
+pub mod av1;
 pub mod vp9;
 
 // ─────────────────────────── opaque VA types ──────────────────────────────────

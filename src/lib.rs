@@ -61,6 +61,8 @@ pub mod display;
 pub mod engine;
 #[cfg(feature = "hevc")]
 pub mod hevc;
+#[cfg(feature = "av1")]
+pub mod av1;
 #[cfg(feature = "vp9")]
 pub mod vp9;
 pub mod host;
