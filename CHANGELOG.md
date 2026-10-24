@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `hevc`, `vp9`, `av1`, `h264` features: whole-stream VLD decoding (`HevcDecoder`, `Vp9Decoder`, `Av1Decoder`, `H264Decoder`) over the oxideav-h265 / -vp9 / -av1 / -h264 parsers, on a shared `session::DecodeSession` (config, context, surface pool, NV12 / P010 read-back); VA buffer layouts in `sys::{hevc, vp9, av1}`
+- `host::HostLoader` (`new` / `with_bracket`) and `host::install`: a host-provided symbol resolver (plus optional enter / exit bracketing of every native call) in place of the `dlopen` of libva
+- `system-loader` feature (default): `dlopen` of `libva.so.2` / `libva-drm.so.2` through `dlsym` and the render node through `libc`; without it the crate builds on any target and reaches libva only through a `HostLoader`
+- `bitstream` feature: the IDR-only `H264VaDecoder` over oxideav-bitstream (`registry` implies it and `system-loader`)
+
+### Changed
+
+- `--no-default-features` builds no longer load libva themselves (enable `system-loader`) and no longer contain `decoder::{H264VaDecoder, DecodedFrame}` (enable `bitstream`); default-feature builds are unchanged
+- `sys::Vtable` gains the C library's `open` / `close`, which the render node is opened through
+
 ### Other
 
 - edition 2024, MSRV 1.95
