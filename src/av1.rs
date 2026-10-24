@@ -36,6 +36,7 @@ const REFS: usize = NUM_REF_FRAMES as usize;
 /// A shown frame. Its surface stays valid until the next call into the
 /// decoder.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Av1Picture {
     /// Surface slot in the decoder's session.
     pub slot: usize,
@@ -50,6 +51,7 @@ pub struct Av1Picture {
 
 /// What a sequence needs from the driver.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Av1Requirements {
     pub va_profile: i32,
     pub format: SurfaceFormat,

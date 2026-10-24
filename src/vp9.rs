@@ -37,6 +37,7 @@ const SURFACES: usize = 10;
 /// A shown frame. Its surface stays valid until the next call into the
 /// decoder.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Vp9Picture {
     /// Surface slot in the decoder's session.
     pub slot: usize,
@@ -53,6 +54,7 @@ pub struct Vp9Picture {
 
 /// What a stream needs from the driver.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Vp9Requirements {
     pub va_profile: i32,
     pub format: SurfaceFormat,

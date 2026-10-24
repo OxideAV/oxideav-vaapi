@@ -1,7 +1,7 @@
 //! Pluggable symbol resolution and native-call bracketing.
 //!
 //! By default the bridge `dlopen`s `libva.so.2` / `libva-drm.so.2`
-//! itself (the `system-loader` feature, through `libloading`). A host
+//! itself (the `system-loader` feature, through `dlsym`). A host
 //! that reaches libva some other way installs a [`HostLoader`] before
 //! the first VA call instead:
 //!
@@ -33,6 +33,7 @@ pub type ExitFn = unsafe extern "C" fn(usize);
 
 /// A host-provided way to reach libva (see the module documentation).
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct HostLoader {
     /// Passed unchanged to `resolve`.
     pub context: *mut c_void,
@@ -45,6 +46,26 @@ pub struct HostLoader {
 // context the host promises is usable from any thread.
 unsafe impl Send for HostLoader {}
 unsafe impl Sync for HostLoader {}
+
+impl HostLoader {
+    /// A loader that resolves through `resolve` (called with `context`)
+    /// and brackets nothing.
+    pub fn new(context: *mut c_void, resolve: ResolveFn) -> Self {
+        HostLoader {
+            context,
+            resolve,
+            enter: None,
+            exit: None,
+        }
+    }
+
+    /// Bracket every native call with `enter` / `exit`.
+    pub fn with_bracket(mut self, enter: EnterFn, exit: ExitFn) -> Self {
+        self.enter = Some(enter);
+        self.exit = Some(exit);
+        self
+    }
+}
 
 static HOST: OnceLock<HostLoader> = OnceLock::new();
 

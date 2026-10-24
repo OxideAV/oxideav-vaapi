@@ -40,6 +40,7 @@ const NAL_EOS: u8 = 36;
 /// A decoded picture. Its surface stays valid until the next call into
 /// the decoder.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct HevcPicture {
     /// Surface slot in the decoder's session.
     pub slot: usize,
@@ -74,6 +75,7 @@ struct Segment {
 
 /// What a stream needs from the driver (see [`HevcDecoder::requirements`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HevcRequirements {
     pub va_profile: i32,
     pub format: SurfaceFormat,

@@ -26,6 +26,7 @@ pub const VA_FOURCC_P010: u32 = 0x3031_3050;
 
 /// Why a hardware decode could not be done.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The stream needs something this driver or this bridge does not do
     /// (profile, bit depth, chroma format, size, coding tool). Nothing was
@@ -68,6 +69,7 @@ fn vtable() -> Result<&'static sys::Vtable, DecodeError> {
 
 /// Sample layout of a session's surfaces.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceFormat {
     /// 8-bit 4:2:0, Y plane then interleaved CbCr.
     Nv12,
@@ -145,11 +147,30 @@ impl<'a> Buffer<'a> {
 
 /// Destination planes for [`DecodeSession::read`]: luma, then the
 /// interleaved chroma plane, with their row strides in bytes.
+#[non_exhaustive]
 pub struct Planes<'a> {
     pub luma: &'a mut [u8],
     pub luma_stride: usize,
     pub chroma: &'a mut [u8],
     pub chroma_stride: usize,
+}
+
+impl<'a> Planes<'a> {
+    /// Destination planes: `luma` rows `luma_stride` bytes apart, the
+    /// interleaved chroma rows `chroma_stride` bytes apart.
+    pub fn new(
+        luma: &'a mut [u8],
+        luma_stride: usize,
+        chroma: &'a mut [u8],
+        chroma_stride: usize,
+    ) -> Self {
+        Planes {
+            luma,
+            luma_stride,
+            chroma,
+            chroma_stride,
+        }
+    }
 }
 
 /// See the module documentation.

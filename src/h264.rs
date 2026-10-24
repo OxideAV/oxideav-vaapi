@@ -69,6 +69,7 @@ mod pic_fields {
 /// A decoded picture. Its surface stays valid until the next call into
 /// the decoder.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct H264Picture {
     /// Surface slot in the decoder's session.
     pub slot: usize,
@@ -87,6 +88,7 @@ pub struct H264Picture {
 
 /// What a sequence needs from the driver.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct H264Requirements {
     pub va_profile: i32,
     pub coded_width: u32,

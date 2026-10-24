@@ -30,6 +30,15 @@ oxideav-av1 = { version = "0.1.21", optional = true }
 # H.264 decode (`h264` feature): parameter sets, slice headers, picture
 # order counts, reference lists and marking from the H.264 crate.
 oxideav-h264 = { version = "0.1.9", optional = true }
+# Shared minimal IDR/keyframe header parser — H.264 / HEVC / AV1.
+# The vaapi bridge feeds parsed SPS/PPS/slice fields into the
+# `VAPictureParameterBufferH264` / `VAPictureParameterBufferHEVC`
+# parameter buffers (`bitstream` feature; target-independent, like the
+# front-end parsers above). Standalone-publishable crates depend on each
+# other via plain `version = "0.0"` strings; the workspace
+# `[patch.crates-io]` entry redirects local builds to
+# `crates/oxideav-bitstream/`.
+oxideav-bitstream = { version = "0.0", optional = true }
 
 # The default `system-loader` feature dlopens libva with dlsym and opens
 # the render node with libc. Without it the crate builds on any target and
@@ -42,14 +51,6 @@ dlsym = { version = "0.0.2", optional = true }
 # `libc::open` is the same shape as calling `dlopen`, both are
 # platform interfaces.
 libc = { version = "0.2", optional = true }
-# Shared minimal IDR/keyframe header parser — H.264 / HEVC / AV1.
-# The vaapi bridge feeds parsed SPS/PPS/slice fields into the
-# `VAPictureParameterBufferH264` / `VAPictureParameterBufferHEVC`
-# parameter buffers. Standalone-publishable crates depend on each
-# other via plain `version = "0.0"` strings; the workspace
-# `[patch.crates-io]` entry redirects local builds to
-# `crates/oxideav-bitstream/`.
-oxideav-bitstream = { version = "0.0", optional = true }
 # Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
 # via the `oxideav_core::register!` macro. Linux-only because the
 # entire crate body is `#![cfg(target_os = "linux")]`. Optional +

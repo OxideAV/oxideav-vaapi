@@ -86,12 +86,7 @@ fn digest(width: u32, height: u32, read: impl FnOnce(&mut Planes<'_>)) -> String
     let (w, h) = (width as usize, height as usize);
     let mut buf = vec![0u8; w * h + ((w + 1) & !1) * h.div_ceil(2)];
     let (luma, chroma) = buf.split_at_mut(w * h);
-    let mut planes = Planes {
-        luma,
-        luma_stride: w,
-        chroma,
-        chroma_stride: (w + 1) & !1,
-    };
+    let mut planes = Planes::new(luma, w, chroma, (w + 1) & !1);
     read(&mut planes);
     Md5::digest(&buf)
         .iter()
