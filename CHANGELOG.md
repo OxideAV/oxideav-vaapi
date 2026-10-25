@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.3...v0.0.4) - 2026-10-25
+
+### Fixed
+
+- fixup for #6: oxideav-vp9 pin follows its 0.0.14 release (the public §8.6.1 quantizer lookups)
+- fixup for #6: CHANGELOG entry
+- fixup for #6: #[non_exhaustive] records, Planes::new / HostLoader::new + with_bracket, oxideav-bitstream target-independent
+
+### Other
+
+- decoding front ends: clippy and rustfmt under edition 2024
+- whole-stream GPU decoding of H.264, HEVC, VP9 and AV1
+- the loader-dependent tests need the system-loader feature
+- H.264 decode over oxideav-h264's parser
+- AV1 decode over oxideav-av1's header parser
+- VP9 decode over oxideav-vp9's header parser
+- HEVC decode over oxideav-h265's parser
+- pluggable host loader, optional system loader
+- untrack Cargo.lock (library crate; release-plz owns the resolution)
+- dlsym instead of libloading
+- edition 2024, MSRV 1.95
+- rank the IDR-only H.264 decoder behind the pure-Rust h264_sw
+- README points CodecPreferences at oxideav-pipeline
+- README examples use the current registry API
+- add CI / crates.io / docs.rs / MIT-license badges
+
 ### Added
 
 - `hevc`, `vp9`, `av1`, `h264` features: whole-stream VLD decoding (`HevcDecoder`, `Vp9Decoder`, `Av1Decoder`, `H264Decoder`) over the oxideav-h265 / -vp9 / -av1 / -h264 parsers, on a shared `session::DecodeSession` (config, context, surface pool, NV12 / P010 read-back); VA buffer layouts in `sys::{hevc, vp9, av1}`
