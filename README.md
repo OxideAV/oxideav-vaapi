@@ -35,10 +35,10 @@ Users who want to force the pure-Rust path globally can pass `--no-hwaccel` to t
 
 | Codec        | Decode | Encode |
 |--------------|--------|--------|
-| H.264        | planned | depends on host driver (see below) |
-| HEVC         | planned | depends on host driver |
-| VP9          | planned | depends on host driver |
-| AV1          | planned (Intel Tiger Lake+, AMD RDNA3+) | depends on host driver |
+| H.264        | whole stream (`h264::H264Decoder`); registry: IDR-only | depends on host driver (see below) |
+| HEVC         | whole stream (`hevc::HevcDecoder`), Main / Main 10 | depends on host driver |
+| VP9          | whole stream (`vp9::Vp9Decoder`), profiles 0 / 2 | depends on host driver |
+| AV1          | whole stream (`av1::Av1Decoder`), profile 0, film grain (Intel Tiger Lake+, AMD RDNA3+) | depends on host driver |
 | VP8          | planned | — |
 | MPEG-2       | planned | depends on host driver |
 | JPEG         | planned | depends on host driver |
@@ -51,6 +51,20 @@ codecs land an `EncSlice` entrypoint; on NVIDIA via
 `nvidia-vaapi-driver` (NVDEC-only) **no** encode entrypoint is
 exposed — see [`Display::is_supported`](#capability-probing) for
 the runtime check.
+
+## Decoding front ends
+
+The `h264`, `hevc`, `vp9` and `av1` features (on by default) are
+whole-stream VLD decoders on a shared `session::DecodeSession`. Every
+header they read — parameter sets, slice headers, picture order counts,
+reference picture sets and lists, VP9 uncompressed headers, AV1
+sequence / frame headers and tile groups, with the cross-frame state
+each keeps — comes from [`oxideav-bitstream`](https://crates.io/crates/oxideav-bitstream);
+the bridge never depends on a software codec crate. It translates those
+headers into the VA parameter buffers and moves pixels back out.
+`tests/va_buffers.rs` pins every buffer they submit, byte for byte,
+against golden dumps through a recording libva stand-in (no GPU), and
+`tests/hardware_decode.rs` decodes whole streams on a real driver.
 
 ## Capability probing
 
@@ -120,9 +134,9 @@ Capability / family-map surface:
   `codec_encode_supported(&matrix, codec_id)` let multi-codec
   pre-flights share one matrix.
 
-Additional codec adapters (HEVC, VP9, AV1) register once matching
-parser crates land, pre-flighting `codec_decode_supported` without
-re-walking the profile list.
+Registry adapters for the HEVC, VP9 and AV1 front ends can pre-flight
+`codec_decode_supported` the same way, without re-walking the profile
+list.
 
 Integration tests are regime-agnostic and pass both against a working
 driver (success path — vendor string, profile list, entrypoint set)

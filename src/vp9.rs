@@ -1,12 +1,13 @@
 //! VP9 decode through VA-API.
 //!
-//! Uncompressed frame headers come from oxideav-vp9's parser; this
-//! module keeps the state a header leaves to earlier frames (reference
-//! slots and sizes, the colour configuration of the last intra frame,
-//! loop filter deltas and segmentation features, §7.2 / §7.4.12 "keep
-//! the previous value" rules), derives each segment's loop filter
-//! levels (§8.8.1) and quantizers (§8.6.1), and hands the whole frame
-//! to the driver, which reads the compressed header and tiles itself.
+//! Uncompressed frame headers come from oxideav-bitstream's
+//! [`Vp9State`], which also keeps what a header leaves to later frames
+//! (reference slot sizes, the colour configuration of the last intra
+//! frame, loop filter deltas and segmentation features, §7.2 / §7.4.12
+//! "keep the previous value" rules) and derives each segment's loop
+//! filter levels (§8.8.1) and quantizers (§8.6.1). This module keeps a
+//! surface per reference slot and hands the whole frame to the driver,
+//! which reads the compressed header and tiles itself.
 //!
 //! Scope: profiles 0 and 2 (4:2:0 at 8 or 10 bits). A frame whose size
 //! differs from the sequence's outside a key frame (reference scaling)
@@ -16,10 +17,9 @@
 //! One call takes one sample (a frame or a superframe) and returns the
 //! frame it shows, if any, as soon as the hardware has finished it.
 
-use oxideav_vp9::{
-    ColorConfig, FrameType, MAX_SEGMENTS, RefFrameState, SEG_LVL_MAX, SegmentationParams,
-    Vp9FrameHeader, get_ac_quant, get_dc_quant, loop_filter_frame_init,
-    parse_uncompressed_header_with_refs, split_superframe,
+use oxideav_bitstream::vp9::frame::{
+    MAX_LOOP_FILTER, SEG_LVL_ALT_L, SEG_LVL_REF_FRAME, SEG_LVL_SKIP, Vp9ColorConfig as ColorConfig,
+    Vp9FrameHeader, Vp9FrameType, Vp9InterpolationFilter, Vp9State, split_superframe,
 };
 
 use crate::display::Display;
@@ -27,9 +27,6 @@ use crate::session::{Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat, 
 use crate::sys::vp9::*;
 use crate::sys::{VA_INVALID_SURFACE, VA_SLICE_DATA_FLAG_ALL, buffer_type, profile};
 
-/// §6.4.9 feature indices.
-const SEG_LVL_REF_FRAME: usize = 2;
-const SEG_LVL_SKIP: usize = 3;
 /// Eight reference slots, the frame being decoded and the frame last
 /// returned.
 const SURFACES: usize = 10;
@@ -71,14 +68,8 @@ pub struct Vp9Decoder {
     /// frame last returned.
     users: [u8; SURFACES],
     refs: [Option<usize>; 8],
-    ref_dims: [(u32, u32); 8],
-    ref_depth: [u8; 8],
-    color: Option<ColorConfig>,
-    lf_ref_deltas: [i8; 4],
-    lf_mode_deltas: [i8; 2],
-    seg_abs_or_delta: bool,
-    seg_enabled: [[bool; SEG_LVL_MAX]; MAX_SEGMENTS],
-    seg_data: [[i16; SEG_LVL_MAX]; MAX_SEGMENTS],
+    /// Header state across frames.
+    state: Vp9State,
     returned: Option<usize>,
 }
 
@@ -90,14 +81,7 @@ impl Vp9Decoder {
             requirements: None,
             users: [0; SURFACES],
             refs: [None; 8],
-            ref_dims: [(0, 0); 8],
-            ref_depth: [0; 8],
-            color: None,
-            lf_ref_deltas: [1, 0, -1, -1],
-            lf_mode_deltas: [0, 0],
-            seg_abs_or_delta: false,
-            seg_enabled: [[false; SEG_LVL_MAX]; MAX_SEGMENTS],
-            seg_data: [[0; SEG_LVL_MAX]; MAX_SEGMENTS],
+            state: Vp9State::new(),
             returned: None,
         }
     }
@@ -224,33 +208,31 @@ impl Vp9Decoder {
     }
 
     fn decode_frame(&mut self, frame: &[u8]) -> Result<Option<Vp9Picture>, DecodeError> {
-        let refs = self.color.map(|color_config| RefFrameState {
-            ref_dims: &self.ref_dims,
-            color_config,
-        });
-        let h = parse_uncompressed_header_with_refs(frame, refs)
+        let h = self
+            .state
+            .parse_frame(frame)
             .map_err(|e| DecodeError::Bitstream(format!("VP9 frame header: {e:?}")))?;
 
         if h.show_existing_frame {
-            let index = usize::from(h.frame_to_show_map_idx.unwrap_or(0) & 7);
+            let index = usize::from(h.frame_to_show_map_idx & 7);
             let slot = self.refs[index]
                 .ok_or_else(|| DecodeError::Bitstream("shown reference slot is empty".into()))?;
-            let (width, height) = self.ref_dims[index];
+            let (width, height) = self.state.ref_size[index];
+            let bit_depth = self.state.ref_color[index].map_or(0, |c| c.bit_depth);
             self.retain(slot);
             return Ok(Some(Vp9Picture {
                 slot,
                 width,
                 height,
-                bit_depth: self.ref_depth[index],
-                color: self.color.unwrap_or(h.color_config),
+                bit_depth,
+                color: self.state.color.unwrap_or(h.color),
                 key_frame: false,
             }));
         }
 
-        let key = h.frame_type == FrameType::KeyFrame;
-        let intra = key || h.intra_only;
-        let bit_depth = h.color_config.bit_depth;
-        if !h.color_config.subsampling_x || !h.color_config.subsampling_y {
+        let key = h.frame_type == Vp9FrameType::Key;
+        let bit_depth = h.color.bit_depth;
+        if !h.color.subsampling_x || !h.color.subsampling_y {
             return Err(DecodeError::Unsupported(
                 "VP9 chroma other than 4:2:0".into(),
             ));
@@ -271,48 +253,8 @@ impl Vp9Decoder {
             )));
         }
 
-        // §7.2: setup_past_independence() for intra and error-resilient frames.
-        if intra || h.error_resilient_mode {
-            self.lf_ref_deltas = [1, 0, -1, -1];
-            self.lf_mode_deltas = [0, 0];
-            self.seg_abs_or_delta = false;
-            self.seg_enabled = [[false; SEG_LVL_MAX]; MAX_SEGMENTS];
-            self.seg_data = [[0; SEG_LVL_MAX]; MAX_SEGMENTS];
-        }
-        for (slot, d) in self.lf_ref_deltas.iter_mut().zip(h.loop_filter.ref_deltas) {
-            if let Some(d) = d {
-                *slot = d;
-            }
-        }
-        for (slot, d) in self
-            .lf_mode_deltas
-            .iter_mut()
-            .zip(h.loop_filter.mode_deltas)
-        {
-            if let Some(d) = d {
-                *slot = d;
-            }
-        }
-        if h.segmentation.enabled && h.segmentation.update_data {
-            self.seg_abs_or_delta = h.segmentation.abs_or_delta_update;
-            self.seg_enabled = h.segmentation.feature_enabled;
-            self.seg_data = h.segmentation.feature_data;
-        }
-        let seg = SegmentationParams {
-            abs_or_delta_update: self.seg_abs_or_delta,
-            feature_enabled: self.seg_enabled,
-            feature_data: self.seg_data,
-            ..h.segmentation
-        };
-
-        let pic = self.picture_parameters(&h, &seg)?;
-        let slice = slice_parameters(
-            &h,
-            &seg,
-            frame.len(),
-            self.lf_ref_deltas,
-            self.lf_mode_deltas,
-        );
+        let pic = self.picture_parameters(&h)?;
+        let slice = slice_parameters(&h, frame.len());
 
         let session = self.session.as_mut().expect("session ensured");
         let target = session
@@ -332,19 +274,15 @@ impl Vp9Decoder {
         }
         self.users[target] = 0;
 
-        let refresh = if key { 0xFF } else { h.refresh_frame_flags };
+        // Reference slot sizes, deltas and features the frame leaves.
+        self.state.commit(&h);
         for i in 0..8 {
-            if refresh & (1 << i) != 0 {
+            if h.refresh_frame_flags & (1 << i) != 0 {
                 self.retain(target);
                 if let Some(old) = self.refs[i].replace(target) {
                     self.unuse(old);
                 }
-                self.ref_dims[i] = (h.frame_width, h.frame_height);
-                self.ref_depth[i] = bit_depth;
             }
-        }
-        if intra {
-            self.color = Some(h.color_config);
         }
         if !h.show_frame {
             if self.users[target] == 0
@@ -360,7 +298,7 @@ impl Vp9Decoder {
             width: h.frame_width,
             height: h.frame_height,
             bit_depth,
-            color: h.color_config,
+            color: h.color,
             key_frame: key,
         }))
     }
@@ -368,8 +306,19 @@ impl Vp9Decoder {
     fn picture_parameters(
         &self,
         h: &Vp9FrameHeader,
-        seg: &SegmentationParams,
     ) -> Result<VADecPictureParameterBufferVP9, DecodeError> {
+        let seg = &h.segmentation;
+        let intra = h.is_intra();
+        // §7.2.7 numbering (EIGHTTAP 0, EIGHTTAP_SMOOTH 1, EIGHTTAP_SHARP 2,
+        // BILINEAR 3, SWITCHABLE 4); not coded in intra frames.
+        let interpolation_filter = match h.interpolation_filter {
+            _ if intra => 0u8,
+            Vp9InterpolationFilter::EightTapSmooth => 1,
+            Vp9InterpolationFilter::EightTapSharp => 2,
+            Vp9InterpolationFilter::Bilinear => 3,
+            Vp9InterpolationFilter::Switchable => 4,
+            _ => 0,
+        };
         let session = self.session.as_ref().expect("session ensured");
         let mut reference_frames = [VA_INVALID_SURFACE; 8];
         for (i, slot) in self.refs.iter().enumerate() {
@@ -379,14 +328,14 @@ impl Vp9Decoder {
         }
         let b = |flag: bool, at: u32| u32::from(flag) << at;
         use pic_fields::*;
-        let mut fields = b(h.color_config.subsampling_x, SUBSAMPLING_X)
-            | b(h.color_config.subsampling_y, SUBSAMPLING_Y)
-            | b(h.frame_type != FrameType::KeyFrame, FRAME_TYPE)
+        let mut fields = b(h.color.subsampling_x, SUBSAMPLING_X)
+            | b(h.color.subsampling_y, SUBSAMPLING_Y)
+            | b(h.frame_type != Vp9FrameType::Key, FRAME_TYPE)
             | b(h.show_frame, SHOW_FRAME)
             | b(h.error_resilient_mode, ERROR_RESILIENT_MODE)
             | b(h.intra_only, INTRA_ONLY)
             | b(h.allow_high_precision_mv, ALLOW_HIGH_PRECISION_MV)
-            | (u32::from(h.interpolation_filter & 7) << MCOMP_FILTER_TYPE)
+            | (u32::from(interpolation_filter) << MCOMP_FILTER_TYPE)
             | b(h.frame_parallel_decoding_mode, FRAME_PARALLEL_DECODING_MODE)
             | (u32::from(h.reset_frame_context & 3) << RESET_FRAME_CONTEXT)
             | b(h.refresh_frame_context, REFRESH_FRAME_CONTEXT)
@@ -398,7 +347,8 @@ impl Vp9Decoder {
             )
             | b(seg.enabled && seg.update_map, SEGMENTATION_UPDATE_MAP)
             | b(h.quantization.lossless, LOSSLESS_FLAG);
-        if let Some(idx) = h.ref_frame_idx {
+        if !intra {
+            let idx = h.ref_frame_idx;
             for (k, (at, bias_at)) in [
                 (LAST_REF_FRAME, LAST_REF_FRAME_SIGN_BIAS),
                 (GOLDEN_REF_FRAME, GOLDEN_REF_FRAME_SIGN_BIAS),
@@ -408,7 +358,7 @@ impl Vp9Decoder {
             .enumerate()
             {
                 let i = usize::from(idx[k] & 7);
-                if self.refs[i].is_none() && h.frame_type != FrameType::KeyFrame && !h.intra_only {
+                if self.refs[i].is_none() {
                     return Err(DecodeError::Bitstream(
                         "inter frame refers to an empty slot".into(),
                     ));
@@ -416,7 +366,7 @@ impl Vp9Decoder {
                 fields |= (u32::from(idx[k] & 7) << at) | b(h.ref_frame_sign_bias[k], bias_at);
             }
         }
-        let header_len = u8::try_from(h.uncompressed_header_size_bytes).map_err(|_| {
+        let header_len = u8::try_from(h.uncompressed_header_size).map_err(|_| {
             DecodeError::Bitstream("uncompressed header longer than 255 bytes".into())
         })?;
         Ok(VADecPictureParameterBufferVP9 {
@@ -432,10 +382,11 @@ impl Vp9Decoder {
             log2_tile_columns: h.tile_info.tile_cols_log2,
             frame_header_length_in_bytes: header_len,
             first_partition_size: h.header_size_in_bytes,
-            mb_segment_tree_probs: seg.tree_probs.unwrap_or([255; 7]),
-            segment_pred_probs: seg.pred_prob.unwrap_or([255; 3]),
+            // 255 where the frame does not code them.
+            mb_segment_tree_probs: seg.tree_probs,
+            segment_pred_probs: seg.pred_probs,
             profile: h.profile,
-            bit_depth: h.color_config.bit_depth,
+            bit_depth: h.color.bit_depth,
             va_reserved: [0; 8],
         })
     }
@@ -444,16 +395,9 @@ impl Vp9Decoder {
 /// The frame's segment parameters: §8.8.1 filter levels per reference
 /// frame and mode class, §8.6.1 quantizers, and the reference / skip
 /// features. The whole frame is the slice data.
-fn slice_parameters(
-    h: &Vp9FrameHeader,
-    seg: &SegmentationParams,
-    frame_len: usize,
-    ref_deltas: [i8; 4],
-    mode_deltas: [i8; 2],
-) -> VASliceParameterBufferVP9 {
-    let levels = loop_filter_frame_init(&h.loop_filter, seg, ref_deltas, mode_deltas);
-    let depth = h.color_config.bit_depth;
-    let q = &h.quantization;
+fn slice_parameters(h: &Vp9FrameHeader, frame_len: usize) -> VASliceParameterBufferVP9 {
+    let levels = h.loop_filter_levels();
+    let seg = &h.segmentation;
     let mut out = VASliceParameterBufferVP9 {
         slice_data_size: frame_len as u32,
         slice_data_offset: 0,
@@ -461,20 +405,33 @@ fn slice_parameters(
         ..Default::default()
     };
     for (s, p) in out.seg_param.iter_mut().enumerate() {
-        let active = |feature: usize| seg.enabled && seg.feature_enabled[s][feature];
         use segment_flags::*;
-        p.segment_flags = (u16::from(active(SEG_LVL_REF_FRAME)) << SEGMENT_REFERENCE_ENABLED)
+        p.segment_flags = (u16::from(seg.feature_active(s, SEG_LVL_REF_FRAME))
+            << SEGMENT_REFERENCE_ENABLED)
             | (((seg.feature_data[s][SEG_LVL_REF_FRAME] as u16) & 3) << SEGMENT_REFERENCE)
-            | (u16::from(active(SEG_LVL_SKIP)) << SEGMENT_REFERENCE_SKIPPED);
-        for r in 0..4 {
-            for m in 0..2 {
-                p.filter_level[r][m] = levels.levels[s][r][m];
-            }
-        }
-        p.luma_dc_quant_scale = get_dc_quant(0, seg, q, s, depth) as i16;
-        p.luma_ac_quant_scale = get_ac_quant(0, seg, q, s, depth) as i16;
-        p.chroma_dc_quant_scale = get_dc_quant(1, seg, q, s, depth) as i16;
-        p.chroma_ac_quant_scale = get_ac_quant(1, seg, q, s, depth) as i16;
+            | (u16::from(seg.feature_active(s, SEG_LVL_SKIP)) << SEGMENT_REFERENCE_SKIPPED);
+        p.filter_level = levels[s];
+        // INTRA_FRAME has no mode classes, so drivers read [0][0] only;
+        // [0][1] carries the segment's level unless the frame updates
+        // the deltas, as this bridge has always sent it.
+        let lf = &h.loop_filter;
+        p.filter_level[0][1] = if lf.delta_update {
+            0
+        } else if seg.feature_active(s, SEG_LVL_ALT_L) {
+            let d = i32::from(seg.feature_data[s][SEG_LVL_ALT_L]);
+            let l = if seg.abs_or_delta_update {
+                d
+            } else {
+                d + i32::from(lf.level)
+            };
+            l.clamp(0, MAX_LOOP_FILTER) as u8
+        } else {
+            lf.level
+        };
+        p.luma_dc_quant_scale = h.dc_quant(0, s) as i16;
+        p.luma_ac_quant_scale = h.ac_quant(0, s) as i16;
+        p.chroma_dc_quant_scale = h.dc_quant(1, s) as i16;
+        p.chroma_ac_quant_scale = h.ac_quant(1, s) as i16;
     }
     out
 }

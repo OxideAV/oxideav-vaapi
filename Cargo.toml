@@ -17,24 +17,12 @@ categories = ["multimedia::encoding", "multimedia::video", "hardware-support"]
 # tooling consumers can depend on `oxideav-vaapi` with
 # `default-features = false` and avoid the framework dependency tree.
 oxideav-core = { version = "0.1", optional = true }
-# HEVC decode (`hevc` feature): parameter sets, slice headers and the
-# reference picture set / DPB bookkeeping come from the HEVC crate's
-# own parser; the bridge only translates them into VA buffers.
-oxideav-h265 = { version = "0.0.15", optional = true }
-# VP9 decode (`vp9` feature): uncompressed frame headers, loop filter
-# levels and quantizers from the VP9 crate.
-oxideav-vp9 = { version = "0.0.14", optional = true }
-# AV1 decode (`av1` feature): OBUs, sequence and frame headers from the
-# AV1 crate.
-oxideav-av1 = { version = "0.1.21", optional = true }
-# H.264 decode (`h264` feature): parameter sets, slice headers, picture
-# order counts, reference lists and marking from the H.264 crate.
-oxideav-h264 = { version = "0.1.9", optional = true }
-# Shared minimal IDR/keyframe header parser — H.264 / HEVC / AV1.
-# The vaapi bridge feeds parsed SPS/PPS/slice fields into the
-# `VAPictureParameterBufferH264` / `VAPictureParameterBufferHEVC`
-# parameter buffers (`bitstream` feature; target-independent, like the
-# front-end parsers above). Standalone-publishable crates depend on each
+# Header parsing for every decoding front end (`bitstream` feature;
+# target-independent): H.264 / HEVC parameter sets, slice headers and
+# reference picture management, VP9 uncompressed headers, AV1 sequence /
+# frame headers and tile groups, with the cross-frame state each keeps.
+# The bridge only translates them into VA buffers; it never depends on a
+# software codec crate. Standalone-publishable crates depend on each
 # other via plain `version = "0.0"` strings; the workspace
 # `[patch.crates-io]` entry redirects local builds to
 # `crates/oxideav-bitstream/`.
@@ -59,7 +47,9 @@ libc = { version = "0.2", optional = true }
 linkme = { version = "0.3", optional = true }
 
 [features]
-default = ["registry", "system-loader"]
+# The whole-stream front ends cost nothing beyond `bitstream`, which
+# `registry` already brings, so they are on by default.
+default = ["registry", "system-loader", "h264", "hevc", "vp9", "av1"]
 
 # Wires up the codec/encoder/decoder trait implementations against
 # `oxideav-core` so the crate can plug into the `oxideav` framework
@@ -68,16 +58,17 @@ default = ["registry", "system-loader"]
 registry = ["dep:oxideav-core", "dep:linkme", "system-loader", "bitstream"]
 # dlopen libva.so.2 / libva-drm.so.2 (Linux only).
 system-loader = ["dep:libc", "dep:dlsym"]
-# The IDR-only H.264 decoder over oxideav-bitstream's parser.
+# The IDR-only H.264 decoder over oxideav-bitstream's parser (and the
+# header parsing the whole-stream front ends below share).
 bitstream = ["dep:oxideav-bitstream"]
-# HEVC decode over oxideav-h265's parser.
-hevc = ["dep:oxideav-h265"]
-# VP9 decode over oxideav-vp9's header parser.
-vp9 = ["dep:oxideav-vp9"]
-# AV1 decode over oxideav-av1's header parser.
-av1 = ["dep:oxideav-av1"]
-# H.264 decode over oxideav-h264's parser and reference picture management.
-h264 = ["dep:oxideav-h264"]
+# HEVC decode over oxideav-bitstream's parser and reference picture management.
+hevc = ["bitstream"]
+# VP9 decode over oxideav-bitstream's header parser.
+vp9 = ["bitstream"]
+# AV1 decode over oxideav-bitstream's header parser.
+av1 = ["bitstream"]
+# H.264 decode over oxideav-bitstream's parser and reference picture management.
+h264 = ["bitstream"]
 
 [dev-dependencies]
 # The hardware decode test compares frames by MD5.

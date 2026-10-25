@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- the H.264, HEVC, VP9 and AV1 front ends read every header through oxideav-bitstream 0.0.3 (`h264::stream::H264Parser` + `h264::dpb::Dpb`, `hevc::stream::HevcParser` + `hevc::dpb::HevcDpb` + `hevc::scaling::HevcScalingLists`, `vp9::frame::Vp9State`, `av1::frame::Av1RefState` + `parse_tile_group`); the oxideav-h264 / -h265 / -vp9 / -av1 dependencies are gone and the `h264` / `hevc` / `vp9` / `av1` features now only enable `bitstream`. Every VA buffer stays byte-identical to what the previous front ends submitted (`tests/va_buffers.rs`), with one spec-driven exception no fixture reaches: a VP9 error-resilient inter frame now carries the `ref_frame_sign_bias` that §7.2 setup_past_independence() leaves (zero) rather than the coded bits. The parameter-set / header types in `H264Decoder::requirements`, `HevcDecoder::{requirements, supports, parse_sps}` and `Vp9Picture::color` are oxideav-bitstream's
+- `h264`, `hevc`, `vp9` and `av1` are default features (they cost nothing beyond `bitstream`, which `registry` already brings)
+
 ### Added
 
-- `tests/va_buffers.rs`: every VA buffer the H.264 / HEVC / VP9 / AV1 front ends submit, byte for byte, against golden dumps (`tests/fixtures/vabuf/`), through a recording libva stand-in installed with `host::HostLoader` — no GPU needed; ten extra streams beside the GPU fixtures (weighted prediction, scaling matrices, slices, MBAFF, CAVLC, Constrained Baseline, HEVC Main 10 / open GOP, VP9 segmentation / alt-ref / tiles / profile 2, AV1 10-bit film grain / hierarchical GOP)
+- `tests/va_buffers.rs`: every VA buffer the H.264 / HEVC / VP9 / AV1 front ends submit, byte for byte, against golden dumps (`tests/fixtures/vabuf/`), through a recording libva stand-in installed with `host::HostLoader` — no GPU needed; thirteen extra streams beside the GPU fixtures (weighted prediction, scaling matrices, slices, MBAFF, CAVLC, Constrained Baseline, HEVC Main 10 / open GOP / custom scaling lists / wavefront, VP9 segmentation / alt-ref / tiles / profile 2 / lossless, AV1 10-bit film grain / hierarchical GOP / superres)
 
 ## [0.0.4](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.3...v0.0.4) - 2026-10-25
 

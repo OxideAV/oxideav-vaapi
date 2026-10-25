@@ -1,14 +1,13 @@
 //! AV1 decode through VA-API.
 //!
-//! OBUs, sequence headers and frame headers come from oxideav-av1's
-//! parser, which takes the cross-frame state a header refers to
-//! ([`RefInfo`]: reference order hints and sizes, saved loop filter
-//! deltas, segmentation features and global motion). This module keeps
-//! that state as §7.20 reference_frame_update() leaves it, the film
-//! grain parameters each reference slot saves (§7.20, loaded by
-//! load_grain_params()), and a surface for every slot; it fills
-//! `VADecPictureParameterBufferAV1` and one `VASliceParameterBufferAV1`
-//! per tile, and hands the driver each tile group's tile data.
+//! OBUs, sequence headers, frame headers and tile groups come from
+//! oxideav-bitstream's parser; its [`Av1RefState`] holds the cross-frame
+//! state a header refers to (reference order hints and sizes, saved loop
+//! filter deltas, segmentation features, global motion and film grain,
+//! as §7.20 reference_frame_update() / §7.21 leave them). This module
+//! keeps a surface for every slot, fills `VADecPictureParameterBufferAV1`
+//! and one `VASliceParameterBufferAV1` per tile, and hands the driver
+//! each tile group's tile data.
 //!
 //! Scope: profile 0 (4:2:0 at 8 or 10 bits, not monochrome), the
 //! operating point 0 layers, no large-scale tile. A frame with film
@@ -20,18 +19,20 @@
 //! One call takes one temporal unit and returns the frame it shows, if
 //! any, as soon as the hardware has finished it.
 
-use oxideav_av1::{
-    FilmGrainParams, FrameHeader, FrameRestorationType, FrameType, InterpolationFilter,
-    NUM_REF_FRAMES, ObuIter, ObuType, RefInfo, SequenceHeader, TxMode, WarpModelType,
-    parse_frame_header_with_refs, parse_sequence_header, setup_shear,
+use oxideav_bitstream::av1::frame::{
+    Av1FilmGrain as FilmGrainParams, Av1Frame as FrameHeader, Av1FrameType as FrameType,
+    Av1RefState, Av1TxMode as TxMode, Av1WarpModel as WarpModelType, NUM_REF_FRAMES,
+    parse_tile_group, setup_shear,
 };
+use oxideav_bitstream::av1::sequence::{SequenceHeader, parse_sequence_header_obu};
+use oxideav_bitstream::av1::{OBU_FRAME, OBU_FRAME_HEADER, OBU_SEQUENCE_HEADER, OBU_TILE_GROUP};
 
 use crate::display::Display;
 use crate::session::{Buffer, DecodeError, DecodeSession, Planes, SurfaceFormat, check_decode};
 use crate::sys::av1::*;
 use crate::sys::{VA_INVALID_SURFACE, VA_SLICE_DATA_FLAG_ALL, buffer_type, profile};
 
-const REFS: usize = NUM_REF_FRAMES as usize;
+const REFS: usize = NUM_REF_FRAMES;
 
 /// A shown frame. Its surface stays valid until the next call into the
 /// decoder.
@@ -102,7 +103,8 @@ pub struct Av1Decoder {
     session: Option<DecodeSession>,
     requirements: Option<Av1Requirements>,
     sequence: Option<SequenceHeader>,
-    info: RefInfo,
+    /// Header state of the reference slots.
+    state: Av1RefState,
     /// Users of each surface slot: the reference slots and display
     /// entries holding it, plus the frame last returned.
     users: Vec<u8>,
@@ -110,8 +112,6 @@ pub struct Av1Decoder {
     refs: [Option<usize>; REFS],
     /// The surface a show_existing_frame of each slot shows.
     shown: [Option<usize>; REFS],
-    /// Each slot's saved film grain parameters.
-    grain: [Option<FilmGrainParams>; REFS],
     returned: Option<usize>,
 }
 
@@ -122,11 +122,10 @@ impl Av1Decoder {
             session: None,
             requirements: None,
             sequence: None,
-            info: RefInfo::default(),
+            state: Av1RefState::new(),
             users: Vec::new(),
             refs: [None; REFS],
             shown: [None; REFS],
-            grain: Default::default(),
             returned: None,
         }
     }
@@ -135,10 +134,10 @@ impl Av1Decoder {
     /// this bridge cannot decode it.
     pub fn requirements(seq: &SequenceHeader) -> Result<Av1Requirements, DecodeError> {
         let c = &seq.color_config;
-        if seq.seq_profile != 0 || c.mono_chrome || !c.subsampling_x || !c.subsampling_y {
+        if seq.seq_profile != 0 || c.monochrome || !c.subsampling_x || !c.subsampling_y {
             return Err(DecodeError::Unsupported(format!(
                 "AV1 profile {} (monochrome {}, subsampling {} {})",
-                seq.seq_profile, c.mono_chrome, c.subsampling_x, c.subsampling_y
+                seq.seq_profile, c.monochrome, c.subsampling_x, c.subsampling_y
             )));
         }
         let format = match c.bit_depth {
@@ -163,10 +162,11 @@ impl Av1Decoder {
     /// The sequence header OBU among `obus` (the configuration OBUs of an
     /// `av1C` record, or a temporal unit).
     pub fn find_sequence_header(obus: &[u8]) -> Result<Option<SequenceHeader>, DecodeError> {
-        for obu in ObuIter::new(obus) {
-            let obu = obu.map_err(|e| DecodeError::Bitstream(format!("AV1 OBU: {e:?}")))?;
-            if obu.obu_type == ObuType::SequenceHeader {
-                return parse_sequence_header(obu.payload)
+        for obu in oxideav_bitstream::av1::iter_obus(obus) {
+            let (header, payload) =
+                obu.map_err(|e| DecodeError::Bitstream(format!("AV1 OBU: {e:?}")))?;
+            if header.obu_type == OBU_SEQUENCE_HEADER {
+                return parse_sequence_header_obu(payload)
                     .map(Some)
                     .map_err(|e| DecodeError::Bitstream(format!("AV1 sequence header: {e:?}")));
             }
@@ -213,8 +213,7 @@ impl Av1Decoder {
         };
         self.refs = [None; REFS];
         self.shown = [None; REFS];
-        self.grain = Default::default();
-        self.info = RefInfo::default();
+        self.state = Av1RefState::new();
         self.returned = None;
         self.requirements = None;
         self.users = vec![0; r.surfaces()];
@@ -267,14 +266,15 @@ impl Av1Decoder {
         }
         let mut shown: Option<Av1Picture> = None;
         let mut pending: Option<Pending<'_>> = None;
-        for obu in ObuIter::new(sample) {
-            let obu = obu.map_err(|e| DecodeError::Bitstream(format!("AV1 OBU: {e:?}")))?;
+        for obu in oxideav_bitstream::av1::iter_obus(sample) {
+            let (obu, payload) =
+                obu.map_err(|e| DecodeError::Bitstream(format!("AV1 OBU: {e:?}")))?;
             if !self.in_operating_point(obu.extension_flag, obu.temporal_id, obu.spatial_id) {
                 continue;
             }
             match obu.obu_type {
-                ObuType::SequenceHeader => {
-                    let seq = parse_sequence_header(obu.payload).map_err(|e| {
+                OBU_SEQUENCE_HEADER => {
+                    let seq = parse_sequence_header_obu(payload).map_err(|e| {
                         DecodeError::Bitstream(format!("AV1 sequence header: {e:?}"))
                     })?;
                     let r = Self::requirements(&seq)?;
@@ -283,7 +283,7 @@ impl Av1Decoder {
                     }
                     self.sequence = Some(seq);
                 }
-                ObuType::FrameHeader | ObuType::Frame => {
+                OBU_FRAME_HEADER | OBU_FRAME => {
                     if pending.is_some() {
                         return Err(DecodeError::Bitstream(
                             "frame header before the last frame's tiles".into(),
@@ -292,7 +292,9 @@ impl Av1Decoder {
                     let seq = self.sequence.as_ref().ok_or_else(|| {
                         DecodeError::Bitstream("frame before a sequence header".into())
                     })?;
-                    let header = parse_frame_header_with_refs(obu.payload, seq, &self.info)
+                    let header = self
+                        .state
+                        .parse_frame_header(seq, payload, obu.temporal_id, obu.spatial_id)
                         .map_err(|e| DecodeError::Bitstream(format!("AV1 frame header: {e:?}")))?;
                     if header.show_existing_frame {
                         let p = self.show_existing(&header)?;
@@ -306,9 +308,9 @@ impl Av1Decoder {
                         groups: Vec::new(),
                         next_tile: 0,
                     };
-                    if obu.obu_type == ObuType::Frame {
-                        let at = p.header.bits_consumed.div_ceil(8);
-                        let body = obu.payload.get(at..).ok_or_else(|| {
+                    if obu.obu_type == OBU_FRAME {
+                        let at = p.header.header_bits.div_ceil(8);
+                        let body = payload.get(at..).ok_or_else(|| {
                             DecodeError::Bitstream("frame OBU shorter than its header".into())
                         })?;
                         let group = tile_group(&p.header, body)?;
@@ -322,11 +324,11 @@ impl Av1Decoder {
                     }
                     pending = Some(p);
                 }
-                ObuType::TileGroup => {
+                OBU_TILE_GROUP => {
                     let p = pending.as_mut().ok_or_else(|| {
                         DecodeError::Bitstream("tile group without a frame header".into())
                     })?;
-                    let group = tile_group(&p.header, obu.payload)?;
+                    let group = tile_group(&p.header, payload)?;
                     if u32::from(group.start) != p.next_tile {
                         return Err(DecodeError::Bitstream("tile groups out of order".into()));
                     }
@@ -336,8 +338,8 @@ impl Av1Decoder {
                 _ => {}
             }
             let complete = pending.as_ref().is_some_and(|p| {
-                let ti = p.header.tile_info.as_ref();
-                ti.is_some_and(|t| p.next_tile == t.tile_cols * t.tile_rows)
+                let t = &p.header.tile_info;
+                p.next_tile == t.tile_cols * t.tile_rows
             });
             if complete {
                 let p = pending.take().expect("pending frame");
@@ -363,10 +365,7 @@ impl Av1Decoder {
         let Some(seq) = self.sequence.as_ref() else {
             return true;
         };
-        let idc = seq
-            .operating_points
-            .first()
-            .map_or(0, |o| o.operating_point_idc);
+        let idc = u32::from(seq.operating_points.first().map_or(0, |o| o.idc));
         if idc == 0 || !extension {
             return true;
         }
@@ -374,7 +373,7 @@ impl Av1Decoder {
     }
 
     fn show_existing(&mut self, h: &FrameHeader) -> Result<Av1Picture, DecodeError> {
-        let idx = usize::from(h.frame_to_show_map_idx.unwrap_or(0)) % REFS;
+        let idx = usize::from(h.frame_to_show_map_idx) % REFS;
         let slot = self.shown[idx]
             .ok_or_else(|| DecodeError::Bitstream("shown reference slot is empty".into()))?;
         let bit_depth = self
@@ -383,8 +382,8 @@ impl Av1Decoder {
             .map_or(8, |s| s.color_config.bit_depth);
         let picture = Av1Picture {
             slot,
-            width: self.info.upscaled_width[idx],
-            height: self.info.frame_height[idx],
+            width: self.state.slots[idx].upscaled_width,
+            height: self.state.slots[idx].frame_height,
             bit_depth,
             key_frame: h.frame_type == FrameType::Key,
         };
@@ -392,7 +391,6 @@ impl Av1Decoder {
         // §7.21: a shown key frame is loaded and stored into every slot.
         if h.frame_type == FrameType::Key {
             let (decoded, display) = (self.refs[idx], self.shown[idx]);
-            let grain = self.grain[idx].clone();
             for i in 0..REFS {
                 if h.refresh_frame_flags & (1 << i) == 0 || i == idx {
                     continue;
@@ -408,9 +406,10 @@ impl Av1Decoder {
                 }
                 self.refs[i] = decoded;
                 self.shown[i] = display;
-                self.grain[i] = grain.clone();
-                copy_ref_info(&mut self.info, idx, i);
             }
+        }
+        if let Some(seq) = self.sequence.as_ref() {
+            self.state.update(seq, h);
         }
         Ok(picture)
     }
@@ -418,10 +417,7 @@ impl Av1Decoder {
     fn decode_frame(&mut self, p: &Pending<'_>) -> Result<Option<Av1Picture>, DecodeError> {
         let h = &p.header;
         let seq = self.sequence.clone().expect("sequence present");
-        let fs = h
-            .frame_size
-            .as_ref()
-            .ok_or_else(|| DecodeError::Bitstream("frame without a size".into()))?;
+        let fs = &h.size;
         let r = self
             .requirements
             .ok_or_else(|| DecodeError::Bitstream("no session".into()))?;
@@ -430,34 +426,17 @@ impl Av1Decoder {
                 "frame larger than the sequence maximum".into(),
             ));
         }
-        if !h.frame_is_intra {
-            let refs = h
-                .inter_refs
-                .as_ref()
-                .ok_or_else(|| DecodeError::Bitstream("inter frame without references".into()))?;
-            if refs
-                .ref_frame_idx
+        if !h.frame_is_intra
+            && h.ref_frame_idx
                 .iter()
                 .any(|&i| self.refs[usize::from(i) % REFS].is_none())
-            {
-                return Err(DecodeError::Bitstream(
-                    "inter frame refers to an empty slot".into(),
-                ));
-            }
+        {
+            return Err(DecodeError::Bitstream(
+                "inter frame refers to an empty slot".into(),
+            ));
         }
-        // §5.9.30: load_grain_params() for a predicted grain set.
-        let grain = match h.film_grain_params.as_ref() {
-            Some(g) if g.apply_grain && g.predicted => self.grain
-                [usize::from(g.film_grain_params_ref_idx) % REFS]
-                .clone()
-                .map(|mut saved| {
-                    saved.grain_seed = g.grain_seed;
-                    saved.apply_grain = true;
-                    saved
-                }),
-            Some(g) if g.apply_grain => Some(g.clone()),
-            _ => None,
-        };
+        // The grain in force (§5.9.30, load_grain_params() applied).
+        let grain = Some(h.film_grain).filter(|g| g.apply_grain);
 
         let session = self.session.as_mut().expect("session ensured");
         let target = session
@@ -543,9 +522,8 @@ impl Av1Decoder {
             }
             self.refs[i] = Some(target);
             self.shown[i] = Some(shown_slot);
-            self.grain[i] = grain.clone();
-            store_ref_info(&mut self.info, i, h);
         }
+        self.state.update(&seq, h);
         let picture = if h.show_frame {
             self.retain(shown_slot);
             Some(Av1Picture {
@@ -566,123 +544,25 @@ impl Av1Decoder {
     }
 }
 
-/// §7.20 for slot `i`: the frame's order hint, identifiers, sizes and the
-/// parameters later headers load from it.
-fn store_ref_info(info: &mut RefInfo, i: usize, h: &FrameHeader) {
-    let fs = h.frame_size.as_ref().expect("decoded frame has a size");
-    info.valid[i] = true;
-    info.order_hint[i] = h.order_hint;
-    info.frame_id[i] = h.current_frame_id;
-    info.upscaled_width[i] = fs.upscaled_width;
-    info.frame_height[i] = fs.frame_height;
-    info.render_width[i] = fs.render_width;
-    info.render_height[i] = fs.render_height;
-    info.frame_type_is_key[i] = h.frame_type == FrameType::Key;
-    info.saved_gm_params[i] = h
-        .global_motion_params
-        .as_ref()
-        .map_or(oxideav_av1::prev_gm_params_default(), |g| g.gm_params);
-    let (refs, modes) = h.loop_filter_params.as_ref().map_or(
-        (oxideav_av1::LOOP_FILTER_REF_DELTAS_DEFAULT, [0i8; 2]),
-        |lf| (lf.loop_filter_ref_deltas, lf.loop_filter_mode_deltas),
-    );
-    info.saved_lf_ref_deltas[i] = refs;
-    info.saved_lf_mode_deltas[i] = modes;
-    match h.segmentation_params.as_ref() {
-        Some(s) => {
-            info.saved_seg_feature_active[i] = s.segment_feature_active;
-            info.saved_seg_feature_data[i] = s.segment_feature_data;
-        }
-        None => {
-            info.saved_seg_feature_active[i] = Default::default();
-            info.saved_seg_feature_data[i] = Default::default();
-        }
-    }
-}
-
-fn copy_ref_info(info: &mut RefInfo, from: usize, to: usize) {
-    info.valid[to] = info.valid[from];
-    info.order_hint[to] = info.order_hint[from];
-    info.frame_id[to] = info.frame_id[from];
-    info.upscaled_width[to] = info.upscaled_width[from];
-    info.frame_height[to] = info.frame_height[from];
-    info.render_width[to] = info.render_width[from];
-    info.render_height[to] = info.render_height[from];
-    info.frame_type_is_key[to] = info.frame_type_is_key[from];
-    info.saved_gm_params[to] = info.saved_gm_params[from];
-    info.saved_lf_ref_deltas[to] = info.saved_lf_ref_deltas[from];
-    info.saved_lf_mode_deltas[to] = info.saved_lf_mode_deltas[from];
-    info.saved_seg_feature_active[to] = info.saved_seg_feature_active[from];
-    info.saved_seg_feature_data[to] = info.saved_seg_feature_data[from];
-}
-
 /// §5.11.1 tile_group_obu(): the group's tile range and each tile's data.
 fn tile_group<'a>(h: &FrameHeader, body: &'a [u8]) -> Result<TileGroup<'a>, DecodeError> {
-    let ti = h
-        .tile_info
-        .as_ref()
-        .ok_or_else(|| DecodeError::Bitstream("frame header without tile info".into()))?;
-    let num_tiles = ti.tile_cols * ti.tile_rows;
-    let bad = || DecodeError::Bitstream("malformed tile group".into());
-    let mut bits = BitCursor { data: body, at: 0 };
-    let (mut start, mut end) = (0u32, num_tiles - 1);
-    if num_tiles > 1 && bits.read(1).ok_or_else(bad)? == 1 {
-        let n = ti.tile_cols_log2 + ti.tile_rows_log2;
-        start = bits.read(n).ok_or_else(bad)?;
-        end = bits.read(n).ok_or_else(bad)?;
-    }
-    if start > end || end >= num_tiles {
-        return Err(bad());
-    }
-    let mut at = bits.at.div_ceil(8);
-    let size_bytes = usize::from(ti.tile_size_bytes);
-    let mut tiles = Vec::with_capacity((end - start + 1) as usize);
-    for n in start..=end {
-        let size = if n == end {
-            body.len().checked_sub(at).ok_or_else(bad)?
-        } else {
-            let field = body.get(at..at + size_bytes).ok_or_else(bad)?;
-            at += size_bytes;
-            field
-                .iter()
-                .rev()
-                .fold(0usize, |v, &b| (v << 8) | usize::from(b))
-                + 1
-        };
-        if size == 0 || at + size > body.len() {
-            return Err(bad());
-        }
-        tiles.push(Tile {
-            offset: at as u32,
-            size: size as u32,
-            row: (n / ti.tile_cols) as u16,
-            column: (n % ti.tile_cols) as u16,
-        });
-        at += size;
-    }
+    let g = parse_tile_group(&h.tile_info, body)
+        .map_err(|e| DecodeError::Bitstream(format!("malformed tile group: {e:?}")))?;
     Ok(TileGroup {
         data: body,
-        tiles,
-        start: start as u16,
-        end: end as u16,
+        tiles: g
+            .tiles
+            .iter()
+            .map(|t| Tile {
+                offset: t.offset as u32,
+                size: t.size as u32,
+                row: t.row as u16,
+                column: t.col as u16,
+            })
+            .collect(),
+        start: g.tg_start as u16,
+        end: g.tg_end as u16,
     })
-}
-
-struct BitCursor<'a> {
-    data: &'a [u8],
-    at: usize,
-}
-
-impl BitCursor<'_> {
-    fn read(&mut self, n: u32) -> Option<u32> {
-        let mut v = 0u32;
-        for _ in 0..n {
-            let byte = *self.data.get(self.at / 8)?;
-            v = (v << 1) | u32::from((byte >> (7 - self.at % 8)) & 1);
-            self.at += 1;
-        }
-        Some(v)
-    }
 }
 
 fn bit(flag: bool, at: u32) -> u32 {
@@ -697,12 +577,13 @@ fn picture_parameters(
     grain: Option<&FilmGrainParams>,
 ) -> VADecPictureParameterBufferAV1 {
     let c = &seq.color_config;
-    let fs = h.frame_size.as_ref().expect("decoded frame has a size");
+    let fs = &h.size;
     let mut p = VADecPictureParameterBufferAV1::zeroed();
     p.profile = seq.seq_profile;
     p.order_hint_bits_minus_1 = seq.order_hint_bits.saturating_sub(1);
     p.bit_depth_idx = (c.bit_depth - 8) / 2;
-    p.matrix_coefficients = c.matrix_coefficients;
+    // MC_UNSPECIFIED without a colour description (§6.4.2).
+    p.matrix_coefficients = c.color_description.map_or(2, |d| d.2);
     {
         use seq_info::*;
         p.seq_info_fields = bit(seq.still_picture, STILL_PICTURE)
@@ -715,7 +596,7 @@ fn picture_parameters(
             | bit(seq.enable_order_hint, ENABLE_ORDER_HINT)
             | bit(seq.enable_jnt_comp, ENABLE_JNT_COMP)
             | bit(seq.enable_cdef, ENABLE_CDEF)
-            | bit(c.mono_chrome, MONO_CHROME)
+            | bit(c.monochrome, MONO_CHROME)
             | bit(c.color_range, COLOR_RANGE)
             | bit(c.subsampling_x, SUBSAMPLING_X)
             | bit(c.subsampling_y, SUBSAMPLING_Y)
@@ -724,13 +605,15 @@ fn picture_parameters(
     }
     p.frame_width_minus1 = (fs.upscaled_width - 1) as u16;
     p.frame_height_minus1 = (fs.frame_height - 1) as u16;
-    if let Some(r) = h.inter_refs.as_ref() {
-        p.ref_frame_idx = r.ref_frame_idx;
+    let inter = !h.frame_is_intra;
+    if inter {
+        p.ref_frame_idx = h.ref_frame_idx;
     }
     p.primary_ref_frame = h.primary_ref_frame;
     p.order_hint = h.order_hint as u8;
 
-    if let Some(s) = h.segmentation_params.as_ref() {
+    {
+        let s = &h.segmentation;
         use segment_info::*;
         p.seg_info.segment_info_fields = bit(s.enabled, ENABLED)
             | bit(s.update_map, UPDATE_MAP)
@@ -739,8 +622,8 @@ fn picture_parameters(
         for i in 0..8 {
             let mut mask = 0u8;
             for j in 0..8 {
-                p.seg_info.feature_data[i][j] = s.segment_feature_data[i][j];
-                mask |= u8::from(s.segment_feature_active[i][j]) << j;
+                p.seg_info.feature_data[i][j] = s.feature_data[i][j];
+                mask |= u8::from(s.feature_enabled[i][j]) << j;
             }
             p.seg_info.feature_mask[i] = mask;
         }
@@ -750,22 +633,28 @@ fn picture_parameters(
         use film_grain_info::*;
         f.film_grain_info_fields = bit(g.apply_grain, APPLY_GRAIN)
             | bit(g.chroma_scaling_from_luma, CHROMA_SCALING_FROM_LUMA)
-            | (u32::from(g.grain_scaling.saturating_sub(8) & 3) << GRAIN_SCALING_MINUS_8)
+            | (u32::from(g.grain_scaling_minus_8 & 3) << GRAIN_SCALING_MINUS_8)
             | (u32::from(g.ar_coeff_lag & 3) << AR_COEFF_LAG)
-            | (u32::from(g.ar_coeff_shift.saturating_sub(6) & 3) << AR_COEFF_SHIFT_MINUS_6)
+            | (u32::from(g.ar_coeff_shift_minus_6 & 3) << AR_COEFF_SHIFT_MINUS_6)
             | (u32::from(g.grain_scale_shift & 3) << GRAIN_SCALE_SHIFT)
             | bit(g.overlap_flag, OVERLAP_FLAG)
             | bit(g.clip_to_restricted_range, CLIP_TO_RESTRICTED_RANGE);
         f.grain_seed = g.grain_seed;
         f.num_y_points = g.num_y_points;
-        f.point_y_value = g.point_y_value;
-        f.point_y_scaling = g.point_y_scaling;
+        let k = f.point_y_value.len();
+        f.point_y_value.copy_from_slice(&g.point_y_value[..k]);
+        let k = f.point_y_scaling.len();
+        f.point_y_scaling.copy_from_slice(&g.point_y_scaling[..k]);
         f.num_cb_points = g.num_cb_points;
-        f.point_cb_value = g.point_cb_value;
-        f.point_cb_scaling = g.point_cb_scaling;
+        let k = f.point_cb_value.len();
+        f.point_cb_value.copy_from_slice(&g.point_cb_value[..k]);
+        let k = f.point_cb_scaling.len();
+        f.point_cb_scaling.copy_from_slice(&g.point_cb_scaling[..k]);
         f.num_cr_points = g.num_cr_points;
-        f.point_cr_value = g.point_cr_value;
-        f.point_cr_scaling = g.point_cr_scaling;
+        let k = f.point_cr_value.len();
+        f.point_cr_value.copy_from_slice(&g.point_cr_value[..k]);
+        let k = f.point_cr_scaling.len();
+        f.point_cr_scaling.copy_from_slice(&g.point_cr_scaling[..k]);
         for (d, s) in f.ar_coeffs_y.iter_mut().zip(g.ar_coeffs_y_plus_128.iter()) {
             *d = (i16::from(*s) - 128) as i8;
         }
@@ -791,24 +680,30 @@ fn picture_parameters(
         f.cr_offset = g.cr_offset;
     }
 
-    if let Some(ti) = h.tile_info.as_ref() {
+    {
+        let ti = &h.tile_info;
         p.tile_cols = ti.tile_cols as u8;
         p.tile_rows = ti.tile_rows as u8;
-        let shift = if seq.use_128x128_superblock { 5 } else { 4 };
-        for i in 0..(ti.tile_cols as usize).min(63) {
-            let sbs = (ti.mi_col_starts[i + 1] - ti.mi_col_starts[i] + (1 << shift) - 1) >> shift;
-            p.width_in_sbs_minus_1[i] = (sbs - 1) as u16;
+        let shift = FrameHeader::sb_shift(seq);
+        for (d, w) in p
+            .width_in_sbs_minus_1
+            .iter_mut()
+            .zip(ti.col_widths_sb(shift))
+        {
+            *d = (w - 1) as u16;
         }
-        for i in 0..(ti.tile_rows as usize).min(63) {
-            let sbs = (ti.mi_row_starts[i + 1] - ti.mi_row_starts[i] + (1 << shift) - 1) >> shift;
-            p.height_in_sbs_minus_1[i] = (sbs - 1) as u16;
+        for (d, h) in p
+            .height_in_sbs_minus_1
+            .iter_mut()
+            .zip(ti.row_heights_sb(shift))
+        {
+            *d = (h - 1) as u16;
         }
         p.context_update_tile_id = ti.context_update_tile_id as u16;
     }
-    let inter = h.inter_refs.as_ref();
     {
         use pic_info::*;
-        p.pic_info_fields = (u32::from(h.frame_type.as_raw()) << FRAME_TYPE)
+        p.pic_info_fields = (u32::from(h.frame_type.code()) << FRAME_TYPE)
             | bit(h.show_frame, SHOW_FRAME)
             | bit(h.showable_frame, SHOWABLE_FRAME)
             | bit(h.error_resilient_mode, ERROR_RESILIENT_MODE)
@@ -817,49 +712,43 @@ fn picture_parameters(
             | bit(h.force_integer_mv, FORCE_INTEGER_MV)
             | bit(h.allow_intrabc, ALLOW_INTRABC)
             | bit(fs.use_superres, USE_SUPERRES)
+            | bit(inter && h.allow_high_precision_mv, ALLOW_HIGH_PRECISION_MV)
             | bit(
-                inter.is_some_and(|r| r.allow_high_precision_mv),
-                ALLOW_HIGH_PRECISION_MV,
-            )
-            | bit(
-                inter.is_some_and(|r| r.is_motion_mode_switchable),
+                inter && h.is_motion_mode_switchable,
                 IS_MOTION_MODE_SWITCHABLE,
             )
-            | bit(
-                inter.is_some_and(|r| r.use_ref_frame_mvs),
-                USE_REF_FRAME_MVS,
-            )
+            | bit(inter && h.use_ref_frame_mvs, USE_REF_FRAME_MVS)
             | bit(h.disable_frame_end_update_cdf, DISABLE_FRAME_END_UPDATE_CDF)
             | bit(
-                h.tile_info
-                    .as_ref()
-                    .is_some_and(|t| t.uniform_tile_spacing_flag),
+                h.tile_info.uniform_tile_spacing_flag,
                 UNIFORM_TILE_SPACING_FLAG,
             )
-            | bit(h.allow_warped_motion.unwrap_or(false), ALLOW_WARPED_MOTION);
+            | bit(h.allow_warped_motion, ALLOW_WARPED_MOTION);
     }
     p.superres_scale_denominator = fs.superres_denom as u8;
-    p.interp_filter = match inter.map(|r| r.interpolation_filter) {
-        Some(InterpolationFilter::EighttapSmooth) => 1,
-        Some(InterpolationFilter::EighttapSharp) => 2,
-        Some(InterpolationFilter::Bilinear) => 3,
-        Some(InterpolationFilter::Switchable) => 4,
-        _ => 0,
-    };
-    if let Some(lf) = h.loop_filter_params.as_ref() {
-        p.filter_level = [lf.loop_filter_level[0], lf.loop_filter_level[1]];
-        p.filter_level_u = lf.loop_filter_level[2];
-        p.filter_level_v = lf.loop_filter_level[3];
-        use loop_filter_info::*;
-        p.loop_filter_info_fields = ((lf.loop_filter_sharpness & 7) << SHARPNESS_LEVEL)
-            | (u8::from(lf.loop_filter_delta_enabled) << MODE_REF_DELTA_ENABLED)
-            | (u8::from(lf.loop_filter_delta_update) << MODE_REF_DELTA_UPDATE);
-        p.ref_deltas = lf.loop_filter_ref_deltas;
-        p.mode_deltas = lf.loop_filter_mode_deltas;
+    // §6.8.9 numbering; not coded in intra frames.
+    p.interp_filter = if inter {
+        h.interpolation_filter.code()
     } else {
-        p.ref_deltas = oxideav_av1::LOOP_FILTER_REF_DELTAS_DEFAULT;
+        0
+    };
+    {
+        let lf = &h.loop_filter;
+        // Without loop_filter_params() (§5.9.11: CodedLossless or
+        // allow_intrabc) the filter is off and nothing was coded.
+        let lf_coded = !(h.coded_lossless || h.allow_intrabc);
+        p.filter_level = [lf.level[0], lf.level[1]];
+        p.filter_level_u = lf.level[2];
+        p.filter_level_v = lf.level[3];
+        use loop_filter_info::*;
+        p.loop_filter_info_fields = ((lf.sharpness & 7) << SHARPNESS_LEVEL)
+            | (u8::from(lf_coded && lf.delta_enabled) << MODE_REF_DELTA_ENABLED)
+            | (u8::from(lf.delta_update) << MODE_REF_DELTA_UPDATE);
+        p.ref_deltas = lf.ref_deltas;
+        p.mode_deltas = lf.mode_deltas;
     }
-    if let Some(q) = h.quantization_params.as_ref() {
+    {
+        let q = &h.quantization;
         p.base_qindex = q.base_q_idx;
         p.y_dc_delta_q = q.delta_q_y_dc;
         p.u_dc_delta_q = q.delta_q_u_dc;
@@ -874,60 +763,52 @@ fn picture_parameters(
     }
     {
         use mode_control::*;
-        let dq = h.delta_q_params.as_ref();
-        let dlf = h.delta_lf_params.as_ref();
+        let d = &h.delta;
         let tx = match h.tx_mode {
-            Some(TxMode::Only4x4) | None => 0,
-            Some(TxMode::TxModeLargest) => 1,
-            Some(TxMode::TxModeSelect) => 2,
+            TxMode::Largest => 1,
+            TxMode::Select => 2,
+            _ => 0,
         };
-        p.mode_control_fields = bit(dq.is_some_and(|d| d.delta_q_present), DELTA_Q_PRESENT_FLAG)
-            | (u32::from(dq.map_or(0, |d| d.delta_q_res) & 3) << LOG2_DELTA_Q_RES)
-            | bit(
-                dlf.is_some_and(|d| d.delta_lf_present),
-                DELTA_LF_PRESENT_FLAG,
-            )
-            | (u32::from(dlf.map_or(0, |d| d.delta_lf_res) & 3) << LOG2_DELTA_LF_RES)
-            | bit(dlf.is_some_and(|d| d.delta_lf_multi), DELTA_LF_MULTI)
+        p.mode_control_fields = bit(d.delta_q_present, DELTA_Q_PRESENT_FLAG)
+            | (u32::from(d.delta_q_res & 3) << LOG2_DELTA_Q_RES)
+            | bit(d.delta_lf_present, DELTA_LF_PRESENT_FLAG)
+            | (u32::from(d.delta_lf_res & 3) << LOG2_DELTA_LF_RES)
+            | bit(d.delta_lf_multi, DELTA_LF_MULTI)
             | (tx << TX_MODE)
-            | bit(h.reference_select.unwrap_or(false), REFERENCE_SELECT)
-            | bit(h.reduced_tx_set.unwrap_or(false), REDUCED_TX_SET_USED)
-            | bit(h.skip_mode_present.unwrap_or(false), SKIP_MODE_PRESENT);
+            | bit(h.reference_select, REFERENCE_SELECT)
+            | bit(h.reduced_tx_set, REDUCED_TX_SET_USED)
+            | bit(h.skip_mode_present, SKIP_MODE_PRESENT);
     }
-    if let Some(cd) = h.cdef_params.as_ref() {
-        p.cdef_damping_minus_3 = cd.cdef_damping.saturating_sub(3);
-        p.cdef_bits = cd.cdef_bits;
+    {
+        let cd = &h.cdef;
+        p.cdef_damping_minus_3 = cd.damping.saturating_sub(3);
+        p.cdef_bits = cd.bits;
         // The coded secondary strength (the §5.9.19 3 => 4 step undone).
         let coded = |s: u8| if s == 4 { 3 } else { s & 3 };
         for i in 0..8 {
-            p.cdef_y_strengths[i] =
-                (cd.cdef_y_pri_strength[i] << 2) | coded(cd.cdef_y_sec_strength[i]);
-            p.cdef_uv_strengths[i] =
-                (cd.cdef_uv_pri_strength[i] << 2) | coded(cd.cdef_uv_sec_strength[i]);
+            p.cdef_y_strengths[i] = (cd.y_pri_strength[i] << 2) | coded(cd.y_sec_strength[i]);
+            p.cdef_uv_strengths[i] = (cd.uv_pri_strength[i] << 2) | coded(cd.uv_sec_strength[i]);
         }
     }
-    if let Some(lr) = h.lr_params.as_ref() {
+    {
+        let lr = &h.lr;
         use loop_restoration::*;
-        let t = |r: FrameRestorationType| r as u16 & 3;
-        p.loop_restoration_fields = (t(lr.frame_restoration_type[0]) << YFRAME_RESTORATION_TYPE)
-            | (t(lr.frame_restoration_type[1]) << CBFRAME_RESTORATION_TYPE)
-            | (t(lr.frame_restoration_type[2]) << CRFRAME_RESTORATION_TYPE)
+        let t = |i: usize| u16::from(lr.frame_restoration_type[i].code() & 3);
+        p.loop_restoration_fields = (t(0) << YFRAME_RESTORATION_TYPE)
+            | (t(1) << CBFRAME_RESTORATION_TYPE)
+            | (t(2) << CRFRAME_RESTORATION_TYPE)
             | (u16::from(lr.lr_unit_shift & 3) << LR_UNIT_SHIFT)
             | (u16::from(lr.lr_uv_shift & 1) << LR_UV_SHIFT);
     }
+    let g = &h.global_motion;
     for (k, wm) in p.wm.iter_mut().enumerate() {
-        wm.wmmat[2] = 1 << 16;
-        wm.wmmat[5] = 1 << 16;
-        let Some(g) = h.global_motion_params.as_ref() else {
-            continue;
-        };
         let r = k + 1;
         let ty = g.gm_type[r];
-        wm.wmtype = ty as u32;
+        wm.wmtype = u32::from(ty.code());
         wm.wmmat[..6].copy_from_slice(&g.gm_params[r]);
         wm.invalid = match ty {
             WarpModelType::RotZoom | WarpModelType::Affine => {
-                u8::from(!setup_shear(g.gm_params[r]).is_some_and(|s| s.warp_valid))
+                u8::from(!setup_shear(&g.gm_params[r]).warp_valid)
             }
             _ => 0,
         };
@@ -937,21 +818,9 @@ fn picture_parameters(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn cdef_strengths_pack_the_coded_secondary() {
         let coded = |s: u8| if s == 4 { 3 } else { s & 3 };
         assert_eq!([0, 1, 2, 4].map(coded), [0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn tile_sizes_are_little_endian_minus_one() {
-        let mut bits = BitCursor {
-            data: &[0b1010_0000],
-            at: 0,
-        };
-        assert_eq!(bits.read(3), Some(0b101));
-        assert_eq!(bits.at, 3);
     }
 }
