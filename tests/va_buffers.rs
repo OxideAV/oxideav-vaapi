@@ -536,6 +536,9 @@ fn check(name: &str, log: String) {
     }
     let want = std::fs::read_to_string(&path).expect("golden dump");
     if want != log {
+        if let Some(dir) = std::env::var_os("OXIDEAV_VAAPI_ACTUAL_DIR") {
+            let _ = std::fs::write(Path::new(&dir).join(format!("{name}.txt")), &log);
+        }
         let line = want
             .lines()
             .zip(log.lines())
@@ -659,7 +662,8 @@ fn av1() {
 // prediction, scaling matrices, several slices, MBAFF, CAVLC and temporal
 // direct, Constrained Baseline, HEVC Main 10 with scaling lists and open
 // GOPs, VP9 segmentation / hidden alt-ref frames / tiles / profile 2 /
-// error resilience, AV1 10-bit with film grain and a hierarchical GOP.
+// error resilience / lossless, AV1 10-bit with film grain, a hierarchical
+// GOP and superres.
 
 #[test]
 fn h264_wp_cqm() {
@@ -691,6 +695,13 @@ fn hevc_cra() {
     run_hevc("hevc_cra");
 }
 
+/// Custom scaling lists (all sizes, DC values), wavefront entry points,
+/// transquant bypass, weighted prediction.
+#[test]
+fn hevc_sl() {
+    run_hevc("hevc_sl");
+}
+
 #[test]
 fn vp9_seg() {
     run_vp9("vp9_seg");
@@ -701,6 +712,12 @@ fn vp9_10bit() {
     run_vp9("vp9_10bit");
 }
 
+/// Lossless frames, two tile rows.
+#[test]
+fn vp9_lossless() {
+    run_vp9("vp9_lossless");
+}
+
 #[test]
 fn av1_10bit_fg() {
     run_av1("av1_10bit_fg");
@@ -709,4 +726,10 @@ fn av1_10bit_fg() {
 #[test]
 fn av1_hier() {
     run_av1("av1_hier");
+}
+
+/// Superres, compound references, skip mode, switchable motion modes.
+#[test]
+fn av1_tiles_sr() {
+    run_av1("av1_tiles_sr");
 }
