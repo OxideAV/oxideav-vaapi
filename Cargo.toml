@@ -23,7 +23,7 @@ oxideav-core = { version = "0.1", optional = true }
 oxideav-h265 = { version = "0.0.15", optional = true }
 # VP9 decode (`vp9` feature): uncompressed frame headers, loop filter
 # levels and quantizers from the VP9 crate.
-oxideav-vp9 = { version = "0.0.13", optional = true }
+oxideav-vp9 = { version = "0.0.14", optional = true }
 # AV1 decode (`av1` feature): OBUs, sequence and frame headers from the
 # AV1 crate.
 oxideav-av1 = { version = "0.1.21", optional = true }
