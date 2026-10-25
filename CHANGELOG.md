@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tests/va_buffers.rs`: every VA buffer the H.264 / HEVC / VP9 / AV1 front ends submit, byte for byte, against golden dumps (`tests/fixtures/vabuf/`), through a recording libva stand-in installed with `host::HostLoader` — no GPU needed; ten extra streams beside the GPU fixtures (weighted prediction, scaling matrices, slices, MBAFF, CAVLC, Constrained Baseline, HEVC Main 10 / open GOP, VP9 segmentation / alt-ref / tiles / profile 2, AV1 10-bit film grain / hierarchical GOP)
+
 ## [0.0.4](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.3...v0.0.4) - 2026-10-25
 
 ### Fixed
