@@ -60,6 +60,7 @@ impl From<BitstreamError> for VaError {
 
 /// Decoded frame in I420 layout returned from [`H264VaDecoder::decode_idr`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,

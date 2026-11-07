@@ -77,6 +77,7 @@ impl VaProfile {
 
 /// Errors surfaced by the `Display` wrapper.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum VaError {
     /// `open` on the DRM render node failed (no `/dev/dri`,
     /// permission denied, fd table exhausted, …).

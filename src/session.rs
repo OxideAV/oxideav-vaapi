@@ -101,6 +101,7 @@ impl SurfaceFormat {
 
 /// One parameter or data buffer of a picture submission.
 #[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
 pub struct Buffer<'a> {
     /// `VABufferType`.
     pub kind: u32,

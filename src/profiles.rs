@@ -44,6 +44,7 @@ use crate::sys::{entrypoint, profile};
 /// `H264High`, `HEVCMain444_12`). Some families have only one
 /// profile (`vp8`).
 #[derive(Copy, Clone)]
+#[non_exhaustive]
 pub struct CodecFamily {
     /// The codec id used by `oxideav_core::CodecId::new`.
     pub codec: &'static str,

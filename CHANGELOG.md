@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- API hygiene: `VaError`, `DecodedFrame`, `profiles::CodecFamily` and
+  `session::Buffer` (build it with `Buffer::of` / `array` / `bytes`)
+  are now `#[non_exhaustive]`. The `sys` FFI structures stay exhaustive
+  (their `#[repr(C)]` layout is the libva ABI and callers fill them in).
+
 ## [0.0.5](https://github.com/OxideAV/oxideav-vaapi/compare/v0.0.4...v0.0.5) - 2026-10-25
 
 ### Other
